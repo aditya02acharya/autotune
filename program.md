@@ -9,9 +9,10 @@ To set up a new experiment, work with the user to:
 3. **Read the in-scope files**: The repo is empty with just the proposal. Read these files for full context:
    - `proposal.md` — the research to perform.
 4. **Verify uv virtual environment**: Check that `./.venv` exists and can activate. The virtual env is created using uv. You should always use uv for package management.
-5. **data and progress tracking**: raw_data folder contains some curated datasets.  
+5. **data and progress tracking**: raw_data folder contains some curated datasets. You have a processed version as well. 
 6. **Confirm and go**: Confirm setup looks good.
-7. **requests for human**: you can ask for specific research to human. Create a request.md file with clear detailed description and scope inside a folder. human will add a response.md for you.You can only request one at a time. Human will inform you once the response is ready.
+7. **outputs**: Ensure you do not print everything when training model to avoid cotent window filling. Do periodic prints or tail any outputs. Always log your findings and do a thorough analysis of the model. This is for guardrails so missing predictions is costly, understand where models fails and fix them.
+8. Mutate the data for different adversarial attacks, like morse code, l33t style writing of prompts, etc. 
 
 Once you get confirmation, kick off the experimentation.
 
