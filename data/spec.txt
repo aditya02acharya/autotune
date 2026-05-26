@@ -1,507 +1,148 @@
-Below is a cleaner, compressed version of your requirements and problem formulation, based on the uploaded draft. 
+# Guardrails Service — Requirements (v1)
+
+> **Scope:** this document covers the **guardrails service only** — the component that
+> applies guardrails to a request in active or passive mode. The gateway, policy routing,
+> and the 10k-RPS ingress live elsewhere and are out of scope.
+>
+> **v1 principle: keep it simple.** No Redis, no cross-pod coordination, no durable queue.
+> Everything is in-process. Capacity-sharing improvements are deferred to v2 (§7).
 
 ---
 
-# High-Scale Policy-Driven HTTP Orchestration System
+## 1. What this service does
 
-## 1. Problem Formulation
+Receives a request payload and applies guardrails, in one of two modes:
 
-We are designing a high-throughput, policy-driven HTTP orchestration platform running on Kubernetes/EKS using Python and FastAPI.
+- **Active (prevention):** synchronous. Caller blocks and receives an allow / block /
+  redact decision before proceeding. This is a gate.
+- **Passive (detection / audit):** asynchronous. Service acks immediately; the guardrail
+  runs out of band and the result is logged/emitted. It **cannot** block the caller's
+  response (already sent), so it is inherently **best-effort** and may shed under load.
 
-The system receives high-volume ingress traffic and, for each request, dynamically decides which upstream services to call based on policy evaluation. Some upstream calls are fast and highly concurrent, while others are slow, expensive, rate-limited, and sensitive to overload.
-
-This is not a simple REST aggregation layer. It is a distributed execution and scheduling system that must coordinate scarce upstream capacity across many pods, workers, and traffic classes.
-
-The core problem is to safely execute dynamic request fan-out under strict latency, fairness, and reliability constraints, while protecting slow or rate-limited upstream dependencies from overload.
-
----
-
-## 2. System Context
-
-### Ingress Traffic
-
-The platform must support:
-
-* Peak ingress of approximately **10,000 RPS**
-* Bursty and unpredictable traffic
-* Multiple FastAPI pods running on EKS
-* Multiple async workers or event loops per pod
-* Policy-driven execution per request
-
-Each request may result in one or more upstream calls, synchronous processing, asynchronous processing, or a combination of both.
+Both modes call the same rate-limited upstream (Bedrock Guardrails) and therefore draw
+from the same finite budget.
 
 ---
 
-## 3. Execution Model
+## 2. Topology (fixed)
 
-Each incoming request is evaluated by a policy engine, which produces an execution plan.
+| Element | Value | Consequence |
+|---|---|---|
+| EKS pod replicas | 2 | Two failure domains |
+| Uvicorn workers/pod | 4 | **8 independent OS processes** |
+| Per process | own event loop, own httpx pool, own semaphores | In-process limits do **not** coordinate across workers |
+| Shared store | **none in v1** | Global budget must be split statically (§4) |
 
-The execution plan may require:
+---
 
-* Fast upstream calls
-* Slow upstream calls
-* Both fast and slow upstream calls
-* Active synchronous processing
-* Passive asynchronous processing
-* Queue-backed deferred execution
-* Active response plus passive enrichment
+## 3. The binding constraint — Bedrock Guardrails
 
-Example execution patterns:
+`ApplyGuardrail` default quota (us-east-1 / us-west-2), both adjustable via Service Quotas:
 
-```text
-Request A -> fast upstream only
-Request B -> slow upstream only
-Request C -> fast + slow upstreams
-Request D -> enqueue passive work
-Request E -> active response + passive background enrichment
+- **50 calls/sec**
+- **200 text units/sec** (1 TU ≈ 1,000 chars)
+
+Which one binds: `min( 50, 200 / avg_TU_per_call )`. Payloads > ~4 KB hit the TU limit first.
+
+Little's Law sanity check: `50/sec × ~0.3 s ≈ ~15` concurrent calls in flight. Small and
+trivially bounded — there is no large-concurrency problem on the guardrail path itself.
+
+**Capacity reality for v1:** the service can sustain ~48 guardrail calls/sec total (§4).
+Any guardrail-requiring demand above that is **shed** (active) or **dropped** (passive).
+v1 is correct and safe at this rate; raising real throughput needs a quota increase, a
+local classifier offload, or both — see §7 and §8.
+
+---
+
+## 4. Global budget without a shared store — static partition
+
+The only way to guarantee the aggregate never exceeds Bedrock's quota, with no shared
+store, is to give each worker a fixed slice:
+
+```
+calls:       50 / 8 = 6.25  → 6 calls/sec per worker   → 48/sec aggregate (safe < 50)
+text units: 200 / 8 = 25 TU/sec per worker
 ```
 
-Because the execution graph is dynamic, resource usage cannot be predicted purely from ingress RPS.
+Enforced by a simple **in-process token bucket** per worker (one for calls, one for TUs).
+No network hop, no dependency.
+
+- **Tradeoff:** under uneven load some workers throttle while the global budget isn't
+  fully used. Accepted for v1.
+- **Why conservative rounding:** sum of per-worker limits must be ≤ 50, so round *down*.
 
 ---
 
-## 4. Upstream Dependency Classes
+## 5. v1 Requirements
 
-### Fast Upstream
+**R1 — Budget enforcement (in-process).** Per-worker token buckets sized per §4. Retries
+draw from the same bucket so they cannot bypass the limit.
 
-The fast upstream is low-latency and highly concurrent, but still requires protection.
+**R2 — Per-upstream isolation.** Dedicated httpx connection pool, concurrency semaphore,
+timeout budget, and circuit breaker for Bedrock (and for the local model if used). No
+shared unconstrained pool.
 
-Typical characteristics:
+**R3 — Strict timeouts.** Connect, pool-acquire, read, write, and an overall deadline on
+every upstream call. A slow upstream must never hold a request open indefinitely.
 
-* p50 latency: ~30 ms
-* p99 latency: ~150 ms
-* No strict external rate limit
-* High concurrency tolerance
+**R4 — Bounded concurrency.** Explicit caps on in-flight active requests per worker,
+upstream concurrency, and passive queue depth. On limit reached: shed/defer, never run
+unbounded.
 
-Main risks:
+**R5 — Retry safety.** Bounded retries, exponential backoff **with jitter**,
+idempotency-aware, budget-aware (R1). Active and passive retry policies configured
+separately; on Bedrock 429, back off rather than hammer.
 
-* Connection pool exhaustion
-* Burst amplification
-* Excessive concurrent calls
-* Accidental overload during traffic spikes
+**R6 — Graceful degradation (fail *closed* for a safety service).**
+- Active + budget exhausted / breaker open → **reject** (e.g. 429/503). Do **not** allow
+  unchecked — failing open defeats a guardrails service.
+- Passive + queue full → drop with a metric (acceptable by design; passive is best-effort).
+- A per-class override may permit fail-open only for explicitly low-risk traffic.
 
-### Slow Upstream
+**R7 — Passive queue (in-memory, bounded).** A bounded `asyncio` queue per worker drains
+at the worker's budget rate. Smooths short bursts only; sheds when full. **Not durable** —
+in-flight passive work is lost on restart (acceptable for best-effort detection in v1).
 
-The slow upstream is expensive, rate-limited, and tail-latency sensitive.
-
-Typical characteristics:
-
-* p50 latency: ~500 ms
-* p99 latency: up to ~5 seconds
-* Strict rate limits
-* Latency worsens significantly under load
-
-Main risks:
-
-* Concurrency explosion
-* Queue buildup
-* Socket exhaustion
-* Retry storms
-* Tail-latency amplification
-* Upstream throttling or cascading failure
+**R8 — Observability.** Emit: budget utilisation (calls + TU), throttle/shed counts,
+upstream latency percentiles, 429 rate, breaker state, passive queue depth, active
+reject rate. These metrics are what justify the v2 work.
 
 ---
 
-## 5. Execution Modes
+## 6. Components (v1)
 
-### Active Processing
+| Component | Responsibility |
+|---|---|
+| HTTP handler | Accept request, branch active vs passive |
+| Budget limiter | Per-worker token buckets (calls + TU) |
+| Bedrock client | Bounded-concurrency call + timeouts + breaker |
+| Passive runner | In-memory bounded queue + background drain at budget rate |
+| (Local classifier) | *Optional / TBD — see §8* |
+| Metrics | Counters + histograms per R8 |
 
-Active processing is user-facing and synchronous.
-
-It must:
-
-* Respect strict latency budgets
-* Avoid unbounded waiting
-* Fail fast or degrade gracefully under pressure
-* Prioritise response latency over completeness
-
-Active processing may call fast upstreams, slow upstreams, or both.
-
-### Passive Processing
-
-Passive processing is deferred and non-user-blocking.
-
-It should:
-
-* Use queue-backed execution
-* Smooth burst traffic
-* Run eventually and asynchronously
-* Consume spare capacity where possible
-* Avoid competing unfairly with active traffic
-
-Passive processing may also call fast upstreams, slow upstreams, or both.
+Keep budget + breaker logic in one small, testable module rather than scattered through
+handlers.
 
 ---
 
-## 6. Key Challenges
+## 7. Explicitly deferred to v2
 
-### 6.1 Dynamic Fan-Out
-
-Requests do not map statically to upstreams. A single request may consume fast upstream capacity, slow upstream capacity, queue capacity, and worker capacity.
-
-This prevents simple fixed traffic partitioning.
-
-### 6.2 Shared Slow-Upstream Capacity
-
-The slow upstream is a globally shared scarce resource consumed by:
-
-* Active requests
-* Passive jobs
-* All pods
-* All workers
-* All regions, if deployed multi-region
-
-Therefore, slow-upstream access requires global quota coordination.
-
-### 6.3 Tail-Latency Amplification
-
-Slow p99 latency causes large in-flight concurrency.
-
-```text
-Concurrency = Throughput × Latency
-```
-
-For example:
-
-```text
-10,000 RPS × 5 seconds = 50,000 in-flight waits
-```
-
-Unbounded async awaits are not acceptable.
-
-### 6.4 Horizontal Scaling Risk
-
-In Kubernetes, each pod may independently accept traffic and issue upstream calls.
-
-Without distributed coordination, adding pods can unintentionally multiply upstream pressure and break global rate limits.
-
-### 6.5 Async Does Not Mean Infinite Capacity
-
-Async I/O improves efficiency, but it does not remove physical limits.
-
-The system must still protect:
-
-* Sockets
-* Memory
-* Event loops
-* Connection pools
-* Upstream services
-* Queue workers
+- **Redis token bucket** — one shared budget across all 8 workers; recovers the capacity
+  lost to static partitioning (§4) and lets the service actually use the full 50/sec.
+- **Durable passive queue** (e.g. Redis Streams) — survives restarts, retry isolation,
+  independent worker scaling, lag metrics.
+- **Cross-pod / multi-region coordination** — only if quota is raised substantially or
+  the deployment spans regions.
 
 ---
 
-# 7. System Goals
-
-## Functional Goals
-
-The system must:
-
-* Evaluate policy per request
-* Build a dynamic execution plan
-* Execute conditional upstream calls
-* Support active and passive execution paths
-* Support queue-backed deferred work
-* Enforce upstream-specific controls
-* Maintain correctness under high concurrency
-
-## Non-Functional Goals
-
-The system must provide:
-
-* High throughput at 10k+ RPS
-* Low active-request latency
-* Bounded slow-upstream usage
-* Predictable queue behaviour
-* Fairness between active and passive traffic
-* Horizontal scalability across pods
-* Graceful degradation under overload
-* Protection against cascading failures
-
----
-
-# 8. Core Requirements
-
-## R1. Global Slow-Upstream Protection
-
-The slow upstream must be protected across all pods and workers.
-
-The system requires:
-
-* Distributed rate limiting
-* Distributed concurrency limiting
-* Global quota enforcement
-* Pod-independent capacity control
-
-Possible implementations:
-
-* Redis-backed quota system
-* Envoy global rate limiting
-* Dedicated quota coordinator
-
----
-
-## R2. Per-Upstream Resource Isolation
-
-Each upstream must have independent controls.
-
-Required controls:
-
-* Connection pool limits
-* Concurrency semaphores
-* Timeout budgets
-* Retry policies
-* Circuit breakers
-* Bulkheads per dependency
-
-Fast and slow upstreams must not share the same unconstrained execution pool.
-
----
-
-## R3. Priority-Aware Scheduling
-
-The scheduler must distinguish between active and passive work.
-
-Required behaviour:
-
-* Active traffic receives priority
-* Passive traffic uses spare capacity
-* Passive work is throttled under contention
-* Active capacity can be reserved
-* Burst borrowing may be allowed when safe
-* Starvation should be avoided where possible
-
----
-
-## R4. Queue-Backed Passive Processing
-
-Passive work must be decoupled from the user-facing request path.
-
-The queue layer must provide:
-
-* Durable buffering
-* Burst smoothing
-* Retry isolation
-* Backpressure visibility
-* Independent worker scaling
-
-Acceptable queue technologies may include:
-
-* Redis Streams
-* Kafka
-* RabbitMQ
-* SQS, if allowed by platform constraints
-
----
-
-## R5. Bounded Concurrency Everywhere
-
-No part of the system may assume unlimited async capacity.
-
-The system must enforce limits for:
-
-* In-flight active requests
-* Fast upstream calls
-* Slow upstream calls
-* Passive worker concurrency
-* Queue depth
-* Retry concurrency
-* Connection pool usage
-
-When limits are reached, the system should queue, defer, shed, or degrade work rather than continuing unbounded execution.
-
----
-
-## R6. Graceful Degradation
-
-When capacity is exhausted, the system must avoid collapse.
-
-Supported degradation strategies:
-
-* Skip optional upstream calls
-* Return partial responses
-* Defer passive work
-* Fail fast for low-priority work
-* Drop non-critical enrichment
-* Apply stricter timeouts
-* Open circuit breakers for unhealthy upstreams
-
-The system should prefer controlled degradation over uncontrolled latency growth.
-
----
-
-## R7. Strict Timeout Enforcement
-
-Every upstream call must have explicit timeout budgets.
-
-Timeouts should include:
-
-* Connection timeout
-* Pool acquisition timeout
-* Read timeout
-* Write timeout
-* Overall request deadline
-
-Slow p99 behaviour must not be allowed to consume unbounded resources.
-
----
-
-## R8. Retry Safety
-
-Retries must be carefully controlled.
-
-Retries must:
-
-* Be bounded
-* Use exponential backoff
-* Use jitter
-* Respect idempotency
-* Respect global quotas
-* Avoid retry storms
-* Avoid recursive amplification
-
-Retry behaviour for active and passive traffic should be configured separately.
-
----
-
-## R9. Backpressure and Load Shedding
-
-The system must apply backpressure before resource exhaustion.
-
-Backpressure may occur at:
-
-* Ingress layer
-* Execution scheduler
-* Distributed quota system
-* Queue layer
-* Worker pools
-* Upstream clients
-
-When the system is overloaded, it should reject, defer, or degrade work explicitly.
-
----
-
-# 9. Required Architectural Components
-
-## 9.1 FastAPI Ingress Layer
-
-Responsibilities:
-
-* Accept incoming HTTP requests
-* Invoke policy evaluation
-* Build execution plans
-* Coordinate active execution
-* Enqueue passive work when required
-* Return user-facing responses
-
-The ingress layer should remain mostly stateless and horizontally scalable.
-
----
-
-## 9.2 Policy Engine
-
-Responsibilities:
-
-* Determine which upstreams are required
-* Determine active vs passive execution
-* Determine priority
-* Determine timeout budgets
-* Determine degradation rules
-* Produce an executable request plan
-
-The policy engine should describe what should happen, not directly own resource scheduling.
-
----
-
-## 9.3 Execution Scheduler
-
-Responsibilities:
-
-* Enforce local and distributed permits
-* Coordinate upstream access
-* Apply priority rules
-* Protect active traffic
-* Decide whether to execute, defer, skip, or fail fast
-
-The scheduler is the core control point between policy intent and actual execution.
-
----
-
-## 9.4 Distributed Quota System
-
-Responsibilities:
-
-* Enforce global rate limits
-* Track global slow-upstream concurrency
-* Coordinate quota across pods
-* Prevent aggregate overload
-* Support active/passive fairness
-
-This is required because local pod-level limits alone are insufficient.
-
----
-
-## 9.5 Passive Queue
-
-Responsibilities:
-
-* Buffer deferred work
-* Smooth burst traffic
-* Decouple passive work from user latency
-* Support retries without blocking active requests
-* Provide queue-depth and lag metrics
-
----
-
-## 9.6 Worker Pools
-
-Responsibilities:
-
-* Consume passive jobs
-* Re-evaluate or execute stored policies
-* Acquire upstream permits before calling dependencies
-* Apply retry and timeout rules
-* Emit metrics and operational signals
-
-Worker pools should scale independently from ingress pods.
-
----
-
-# 10. Failure Scenarios
-
-The system must handle:
-
-* Upstream 429 responses
-* Slow-upstream latency spikes
-* Queue backlog growth
-* Worker crashes
-* Pod restarts
-* Partial upstream outages
-* Connection pool exhaustion
-* Retry storms
-* Event loop saturation
-* Distributed quota contention
-* Circuit breaker activation
-* Passive job replay or duplication
-
----
-
-# 11. Success Criteria
-
-The design is successful if it can:
-
-* Sustain high ingress traffic
-* Protect slow and rate-limited upstreams
-* Preserve active request latency
-* Prevent passive work from overwhelming active traffic
-* Maintain bounded concurrency
-* Degrade gracefully under load
-* Avoid cascading failures
-* Scale horizontally across EKS
-* Provide predictable operational behaviour
-* Expose clear metrics for quotas, queues, latency, failures, and saturation
-
----
-
-# 12. One-Line Summary
-
-Design a distributed, policy-driven HTTP orchestration system that safely executes dynamic upstream fan-out at high scale by combining global quota control, priority-aware scheduling, bounded concurrency, queue-backed passive processing, and graceful degradation.
+## 8. Open items (don't block v1)
+
+1. **Role of the 1B vLLM model** — local guardrail classifier (fast-path that resolves
+   most requests and escalates only uncertain ones to Bedrock) vs. the model being
+   protected. If it's a classifier, it's the main lever for closing the 10k → budget gap
+   and would slot in as the "Local classifier" component in §6.
+2. **Sustained guardrail-requiring rate** — sets whether ~48/sec is adequate for v1 or a
+   quota increase is needed before launch.
+3. **Average payload size** — decides whether the 50/sec or 200 TU/sec limit binds, i.e.
+   which token bucket throttles first.
