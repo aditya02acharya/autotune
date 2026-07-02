@@ -1,0 +1,1076 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAI GATEWAY — LIVE CONTROL PLANE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300;12..96,500;12..96,600;12..96,800&family=Martian+Mono:wght@300;400;600&display=swap" rel="stylesheet">
+<style>
+/* ================= tokens ================= */
+:root{
+  --bg:#eef0f3; --bg2:#e6e9ee; --panel:#f9fafb; --panel2:#eff1f5;
+  --ink:#0a0d12; --ink2:#3c4552; --muted:#69737f; --faint:#9aa4b0;
+  --line:rgba(10,13,18,.12); --line2:rgba(10,13,18,.22);
+  --cy:#0086d1; --cy-bright:#00a5ff; --amber:#a35c00; --ok:#0c8a5f; --bad:#c23b41;
+  --cta-ink:#f4faff;
+  --glow:rgba(0,134,209,.14);
+  --canvas-src:#69737f; --canvas-pkt:#0086d1; --canvas-flag:#a35c00;
+}
+[data-theme="dark"]{
+  --bg:#05070b; --bg2:#080b11; --panel:#0b0f16; --panel2:#0f141d;
+  --ink:#f2f5f8; --ink2:#c4ccd6; --muted:#8a94a6; --faint:#525d6e;
+  --line:rgba(242,245,248,.09); --line2:rgba(242,245,248,.2);
+  --cy:#00c2ff; --cy-bright:#5fd8ff; --amber:#ffb454; --ok:#3ddc97; --bad:#ff6b70;
+  --cta-ink:#02131c;
+  --glow:rgba(0,194,255,.16);
+  --canvas-src:#3a4556; --canvas-pkt:#00c2ff; --canvas-flag:#ffb454;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Bricolage Grotesque',sans-serif;
+  background:var(--bg);color:var(--ink);
+  font-size:16px;line-height:1.55;
+  transition:background .4s,color .4s;
+  overflow-x:hidden;
+}
+.mn{font-family:'Martian Mono',monospace}
+::selection{background:var(--cy);color:var(--cta-ink)}
+:focus-visible{outline:2px solid var(--cy);outline-offset:3px}
+a{color:inherit}
+
+/* ================= top rail ================= */
+.rail{
+  position:fixed;top:0;left:0;right:0;z-index:80;
+  display:flex;align-items:center;gap:0;height:52px;
+  border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--bg) 72%,transparent);
+  backdrop-filter:blur(16px);
+  font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.08em;
+}
+.rail>*{height:100%;display:flex;align-items:center;padding:0 18px;border-right:1px solid var(--line)}
+.rail .id{gap:9px;font-weight:600;color:var(--ink)}
+.rail .id i{width:8px;height:8px;background:var(--cy);display:inline-block;animation:blip 2.2s ease infinite}
+@keyframes blip{50%{opacity:.25}}
+.rail .stat{color:var(--muted)}
+.rail .stat b{color:var(--ink);font-weight:400;margin-left:8px}
+.rail .grow{flex:1;border-right:none}
+.rail nav{gap:2px;border-right:none;padding-right:8px}
+.rail nav a{color:var(--muted);text-decoration:none;padding:6px 10px;transition:.15s;text-transform:uppercase}
+.rail nav a:hover{color:var(--cy)}
+.rail button.mode{
+  border:none;border-right:none;background:transparent;color:var(--muted);
+  font:inherit;cursor:pointer;letter-spacing:.08em;padding:0 18px;height:100%;
+  border-left:1px solid var(--line);transition:.15s;text-transform:uppercase}
+.rail button.mode:hover{color:var(--cy)}
+.rail .cta-mini{
+  border:none;background:var(--cy);color:var(--cta-ink);font:inherit;font-weight:600;
+  cursor:pointer;letter-spacing:.08em;padding:0 22px;height:100%;text-transform:uppercase;transition:.15s}
+.rail .cta-mini:hover{background:var(--cy-bright)}
+@media (max-width:900px){.rail .stat,.rail nav{display:none}}
+
+/* ================= hero / control room ================= */
+.hero{position:relative;min-height:100svh;display:flex;flex-direction:column;overflow:hidden}
+#net{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair}
+.hero-veil{position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(to right,var(--bg) 0%,transparent 34%,transparent 78%,var(--bg) 100%),
+             linear-gradient(to top,var(--bg) 0%,transparent 26%);}
+.hero-in{position:relative;z-index:2;flex:1;display:grid;grid-template-columns:1fr auto;
+  align-items:end;padding:120px 4vw 0;pointer-events:none;gap:40px}
+.hero-in>*{pointer-events:auto}
+.kicker{font-family:'Martian Mono',monospace;font-size:10.5px;letter-spacing:.22em;color:var(--muted);
+  text-transform:uppercase;margin-bottom:26px;display:flex;align-items:center;gap:14px}
+.kicker::before{content:"";width:34px;height:1px;background:var(--cy)}
+h1{
+  font-size:clamp(52px,8.4vw,132px);
+  line-height:.92;letter-spacing:-.045em;font-weight:800;
+  text-transform:uppercase;font-optical-sizing:auto;
+}
+h1 .l{display:block;overflow:hidden}
+h1 .l>span{display:inline-block;transform:translateY(110%);animation:rise .9s cubic-bezier(.2,.9,.25,1) forwards}
+h1 .l:nth-child(2)>span{animation-delay:.12s}
+h1 .l:nth-child(3)>span{animation-delay:.24s}
+@keyframes rise{to{transform:none}}
+h1 .hollow{
+  color:transparent;-webkit-text-stroke:1.5px var(--ink);
+}
+h1 .accent{color:var(--cy)}
+.hero-sub{max-width:46ch;color:var(--ink2);font-size:16.5px;font-weight:500;margin:30px 0 34px;opacity:0;animation:fade .8s .5s forwards}
+@keyframes fade{to{opacity:1}}
+.hero-cta{display:flex;gap:16px;align-items:center;flex-wrap:wrap;opacity:0;animation:fade .8s .65s forwards;margin-bottom:52px}
+.btn{
+  font-family:'Martian Mono',monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;
+  font-weight:600;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:12px;
+  transition:.2s;border:none}
+.btn-solid{background:var(--cy);color:var(--cta-ink);padding:19px 30px;position:relative}
+.btn-solid::after{content:"→";transition:transform .2s}
+.btn-solid:hover{background:var(--cy-bright)}
+.btn-solid:hover::after{transform:translateX(5px)}
+.btn-line{background:transparent;color:var(--ink);padding:18px 26px;border:1px solid var(--line2)}
+.btn-line:hover{border-color:var(--cy);color:var(--cy)}
+/* readouts column */
+.readouts{display:flex;flex-direction:column;gap:0;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 82%,transparent);backdrop-filter:blur(10px);min-width:264px;margin-bottom:52px;opacity:0;animation:fade .8s .8s forwards}
+.ro{padding:16px 20px;border-top:1px solid var(--line)}
+.ro:first-child{border-top:none}
+.ro .k{font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.18em;color:var(--faint);text-transform:uppercase;margin-bottom:6px}
+.ro .v{font-family:'Martian Mono',monospace;font-size:21px;font-weight:600;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.ro .v em{font-style:normal;font-size:11px;color:var(--muted);font-weight:300;margin-left:6px}
+.ro .v.ok{color:var(--ok)} .ro .v.cy{color:var(--cy)}
+@media (max-width:900px){
+  .hero-in{grid-template-columns:1fr;align-items:end;padding-top:96px}
+  .readouts{flex-direction:row;min-width:0;overflow-x:auto}
+  .ro{border-top:none;border-left:1px solid var(--line);flex:1;min-width:150px}
+  .ro:first-child{border-left:none}
+}
+
+/* ================= ticker ================= */
+.ticker{position:relative;z-index:2;border-top:1px solid var(--line);border-bottom:1px solid var(--line);
+  background:var(--bg2);overflow:hidden;padding:13px 0;
+  font-family:'Martian Mono',monospace;font-size:10.5px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+.ticker .track{display:flex;gap:0;width:max-content;animation:tick 42s linear infinite}
+.ticker:hover .track{animation-play-state:paused}
+.ticker span{padding:0 34px;white-space:nowrap}
+.ticker b{color:var(--cy);font-weight:400}
+@keyframes tick{to{transform:translateX(-50%)}}
+
+/* ================= sections ================= */
+section{padding:110px 4vw}
+.sec-tag{font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.24em;color:var(--cy);text-transform:uppercase;margin-bottom:18px;display:flex;align-items:center;gap:14px}
+.sec-tag::after{content:"";flex:1;height:1px;background:var(--line)}
+h2{font-size:clamp(34px,4.4vw,62px);letter-spacing:-.035em;line-height:1;font-weight:800;text-transform:uppercase;margin-bottom:16px}
+h2 .dim{color:var(--faint)}
+.sec-sub{color:var(--muted);font-size:15.5px;max-width:58ch;margin-bottom:52px;font-weight:500}
+
+/* reveal */
+.rv{opacity:0;transform:translateY(26px);transition:opacity .7s cubic-bezier(.2,.8,.3,1),transform .7s cubic-bezier(.2,.8,.3,1)}
+.rv.in{opacity:1;transform:none}
+
+/* ================= capability rails (expanding) ================= */
+.rails{display:flex;gap:10px;min-height:420px}
+.railcard{
+  flex:1;border:1px solid var(--line);background:var(--panel);position:relative;overflow:hidden;
+  display:flex;flex-direction:column;justify-content:flex-end;padding:26px;cursor:default;
+  transition:flex .55s cubic-bezier(.3,.9,.3,1),border-color .3s;
+}
+.railcard:hover,.railcard:focus-within{flex:2.4;border-color:var(--cy)}
+.railcard .idx{position:absolute;top:18px;left:22px;font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.2em;color:var(--faint)}
+.railcard .glyph{position:absolute;top:50%;left:50%;transform:translate(-50%,-60%);font-size:clamp(72px,7vw,120px);font-weight:800;letter-spacing:-.05em;color:transparent;-webkit-text-stroke:1px var(--line2);transition:.4s;user-select:none;text-transform:uppercase;white-space:nowrap}
+.railcard:hover .glyph{-webkit-text-stroke:1px var(--cy);opacity:.5;transform:translate(-50%,-64%) scale(1.04)}
+.railcard h3{font-size:21px;font-weight:800;letter-spacing:-.02em;text-transform:uppercase;margin-bottom:10px}
+.railcard p{font-size:13.5px;color:var(--muted);max-width:38ch;font-weight:500;
+  max-height:0;opacity:0;transition:max-height .5s,opacity .4s .1s;overflow:hidden}
+.railcard:hover p,.railcard:focus-within p{max-height:140px;opacity:1}
+.railcard .tag{font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.16em;color:var(--cy);text-transform:uppercase;margin-top:16px}
+@media (max-width:900px){
+  .rails{flex-direction:column;min-height:0}
+  .railcard{min-height:150px;padding:22px}
+  .railcard p{max-height:200px;opacity:1}
+  .railcard .glyph{display:none}
+}
+
+/* ================= flow schematic ================= */
+.flow{border:1px solid var(--line);background:var(--panel);padding:0;overflow:hidden}
+.flow-head{display:flex;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--line);
+  font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase}
+.flow-body{display:grid;grid-template-columns:1fr 1.35fr 1fr;align-items:stretch}
+.flow-col{padding:34px 28px;border-left:1px solid var(--line)}
+.flow-col:first-child{border-left:none}
+.flow-col .fk{font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.2em;color:var(--faint);text-transform:uppercase;margin-bottom:14px}
+.flow-col h4{font-size:19px;font-weight:800;text-transform:uppercase;letter-spacing:-.015em;margin-bottom:10px}
+.flow-col p{font-size:13px;color:var(--muted);font-weight:500}
+.flow-col.core{background:var(--panel2);position:relative}
+.flow-col.core::before,.flow-col.core::after{
+  content:"→";position:absolute;top:50%;transform:translateY(-50%);
+  font-family:'Martian Mono',monospace;color:var(--cy);font-size:18px;animation:nudge 1.6s ease infinite}
+.flow-col.core::before{left:-9px}
+.flow-col.core::after{right:-9px}
+@keyframes nudge{50%{transform:translateY(-50%) translateX(4px)}}
+.stagelist{display:flex;flex-direction:column;gap:0;margin-top:18px;border:1px solid var(--line)}
+.stage{display:flex;align-items:center;gap:12px;padding:10px 14px;border-top:1px solid var(--line);
+  font-family:'Martian Mono',monospace;font-size:10.5px;letter-spacing:.1em;color:var(--ink2);text-transform:uppercase}
+.stage:first-child{border-top:none}
+.stage i{width:7px;height:7px;background:var(--faint);flex:none;transition:.3s}
+.stage.lit i{background:var(--cy);box-shadow:0 0 10px var(--cy)}
+.stage.lit{color:var(--ink)}
+.flow-token{padding:16px 24px;border-top:1px solid var(--line);font-family:'Martian Mono',monospace;font-size:10.5px;line-height:2;color:var(--muted);letter-spacing:.04em}
+.flow-token b{color:var(--cy);font-weight:400}
+@media (max-width:900px){
+  .flow-body{grid-template-columns:1fr}
+  .flow-col{border-left:none;border-top:1px solid var(--line)}
+  .flow-col:first-child{border-top:none}
+  .flow-col.core::before{content:"↓";left:50%;top:-9px;transform:translateX(-50%)}
+  .flow-col.core::after{content:"↓";right:auto;left:50%;top:auto;bottom:-9px;transform:translateX(-50%)}
+}
+
+/* ================= route table marquee ================= */
+.routes{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:0;overflow:hidden;background:var(--bg2)}
+.routes .row{display:flex;width:max-content;gap:12px;padding:12px 0}
+.routes .row.r1{animation:tick 36s linear infinite}
+.routes .row.r2{animation:tick 36s linear infinite reverse}
+.routes:hover .row{animation-play-state:paused}
+.route-chip{font-family:'Martian Mono',monospace;font-size:11px;letter-spacing:.05em;
+  border:1px solid var(--line);background:var(--panel);color:var(--ink2);padding:9px 16px;white-space:nowrap;display:flex;gap:10px;align-items:center}
+.route-chip i{width:6px;height:6px;background:var(--ok)}
+.route-chip .p{color:var(--faint)}
+
+/* ================= manifest (prereqs) ================= */
+.manifest{border:1px solid var(--line)}
+.mrow{display:grid;grid-template-columns:110px 260px 1fr;border-top:1px solid var(--line);transition:background .2s;background:var(--panel)}
+.mrow:first-child{border-top:none}
+.mrow:hover{background:var(--panel2)}
+.mrow>div{padding:24px 26px}
+.mrow .n{font-family:'Martian Mono',monospace;font-size:12px;color:var(--cy);letter-spacing:.1em;border-right:1px solid var(--line)}
+.mrow h4{font-size:17px;font-weight:800;text-transform:uppercase;letter-spacing:-.01em;border-right:1px solid var(--line);padding-right:20px}
+.mrow p{font-size:13.5px;color:var(--muted);font-weight:500}
+.mrow p b{color:var(--ink2);font-weight:600}
+@media (max-width:800px){
+  .mrow{grid-template-columns:70px 1fr}
+  .mrow h4{border-right:none;grid-column:2;padding-bottom:0}
+  .mrow p{grid-column:2}
+  .mrow .n{grid-row:span 2}
+}
+
+/* ================= onboarding steps ================= */
+.obsteps{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;counter-reset:ob}
+.ob{border:1px solid var(--line);background:var(--panel);padding:26px 24px 30px;position:relative;transition:.25s;counter-increment:ob}
+.ob:hover{border-color:var(--cy);transform:translateY(-4px)}
+.ob::before{content:counter(ob,decimal-leading-zero);font-family:'Martian Mono',monospace;font-size:44px;font-weight:300;color:transparent;-webkit-text-stroke:1px var(--line2);display:block;margin-bottom:18px;transition:.25s}
+.ob:hover::before{-webkit-text-stroke:1px var(--cy)}
+.ob h4{font-size:16px;font-weight:800;text-transform:uppercase;letter-spacing:-.01em;margin-bottom:8px}
+.ob p{font-size:13px;color:var(--muted);font-weight:500}
+@media (max-width:900px){.obsteps{grid-template-columns:1fr 1fr}}
+@media (max-width:560px){.obsteps{grid-template-columns:1fr}}
+.launch{
+  margin-top:64px;border:1px solid var(--line2);position:relative;overflow:hidden;
+  display:flex;align-items:center;justify-content:space-between;gap:30px;flex-wrap:wrap;
+  padding:52px 5%;background:
+    radial-gradient(700px 240px at 12% 0%,var(--glow),transparent 70%),var(--panel);
+}
+.launch h3{font-size:clamp(26px,3.4vw,44px);font-weight:800;text-transform:uppercase;letter-spacing:-.03em;line-height:1}
+.launch .mn{color:var(--muted);font-size:10.5px;letter-spacing:.16em;margin-top:12px;display:block;text-transform:uppercase}
+
+/* ================= fit grid ================= */
+.fit{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.fcol{border:1px solid var(--line);background:var(--panel);padding:30px 26px}
+.fcol .fh{font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.2em;text-transform:uppercase;margin-bottom:8px}
+.fcol .fh.y{color:var(--ok)} .fcol .fh.g{color:var(--cy)} .fcol .fh.n{color:var(--amber)}
+.fcol h3{font-size:19px;font-weight:800;text-transform:uppercase;letter-spacing:-.015em;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.fcol ul{list-style:none;display:flex;flex-direction:column;gap:12px}
+.fcol li{font-size:13.5px;color:var(--ink2);font-weight:500;display:flex;gap:12px}
+.fcol li::before{font-family:'Martian Mono',monospace;font-size:11px;flex:none;margin-top:1px}
+.fcol.yes li::before{content:"+";color:var(--ok)}
+.fcol.no li::before{content:"−";color:var(--amber)}
+.fcol li code{font-family:'Martian Mono',monospace;font-size:11px;color:var(--cy)}
+@media (max-width:900px){.fit{grid-template-columns:1fr}}
+
+footer{border-top:1px solid var(--line);padding:26px 4vw;display:flex;gap:16px;flex-wrap:wrap;
+  font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase}
+footer .r{margin-left:auto}
+
+/* ================= drawer form ================= */
+.scrim{position:fixed;inset:0;background:rgba(2,5,9,.55);backdrop-filter:blur(6px);z-index:90;opacity:0;pointer-events:none;transition:opacity .3s}
+.scrim.on{opacity:1;pointer-events:auto}
+.drawer{
+  position:fixed;top:0;right:0;bottom:0;width:min(600px,100vw);z-index:95;
+  background:var(--bg);border-left:1px solid var(--line2);
+  transform:translateX(102%);transition:transform .45s cubic-bezier(.3,.9,.3,1);
+  display:flex;flex-direction:column;
+}
+.drawer.on{transform:none;box-shadow:-40px 0 120px rgba(0,0,0,.35)}
+.d-head{display:flex;align-items:center;padding:0 26px;height:52px;border-bottom:1px solid var(--line);flex:none;
+  font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.18em;color:var(--muted);text-transform:uppercase}
+.d-head b{color:var(--ink);font-weight:600}
+.d-close{margin-left:auto;background:transparent;border:1px solid var(--line);color:var(--muted);width:32px;height:32px;cursor:pointer;font-size:13px;transition:.2s;font-family:inherit}
+.d-close:hover{color:var(--ink);border-color:var(--line2)}
+.d-prog{display:flex;border-bottom:1px solid var(--line);flex:none}
+.d-prog span{flex:1;padding:12px 8px;text-align:center;font-family:'Martian Mono',monospace;font-size:9px;letter-spacing:.14em;color:var(--faint);text-transform:uppercase;border-left:1px solid var(--line);position:relative;transition:.25s}
+.d-prog span:first-child{border-left:none}
+.d-prog span::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:2px;background:var(--cy);transform:scaleX(0);transition:transform .3s}
+.d-prog span.cur{color:var(--cy)}
+.d-prog span.cur::after{transform:scaleX(1)}
+.d-prog span.done{color:var(--ok)}
+.d-body{flex:1;overflow-y:auto;padding:34px 30px}
+.d-foot{flex:none;display:flex;gap:12px;padding:18px 26px;border-top:1px solid var(--line);background:var(--bg2)}
+.d-foot .sp{flex:1}
+.pane{display:none;animation:pin .35s ease}
+.pane.cur{display:block}
+@keyframes pin{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+.p-title{font-size:24px;font-weight:800;text-transform:uppercase;letter-spacing:-.02em;margin-bottom:6px}
+.p-sub{font-size:13px;color:var(--muted);font-weight:500;margin-bottom:30px}
+.fld{margin-bottom:22px}
+.fld label{display:flex;justify-content:space-between;font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.16em;color:var(--muted);text-transform:uppercase;margin-bottom:9px}
+.fld label .rq{color:var(--amber)}
+.fld input[type=text],.fld input[type=email],.fld select{
+  width:100%;background:var(--panel);border:1px solid var(--line2);color:var(--ink);
+  padding:14px 15px;font-family:'Martian Mono',monospace;font-size:13px;transition:.2s;border-radius:0;-webkit-appearance:none;appearance:none}
+.fld select{background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 20px) 50%,calc(100% - 15px) 50%;background-size:5px 5px;background-repeat:no-repeat}
+.fld input:focus,.fld select:focus{outline:none;border-color:var(--cy);box-shadow:0 0 0 3px var(--glow)}
+.fld input.err{border-color:var(--bad);box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 14%,transparent)}
+.fld .hint{font-size:11px;color:var(--faint);margin-top:8px;font-weight:500}
+.fld .emsg{display:none;font-family:'Martian Mono',monospace;font-size:9.5px;letter-spacing:.06em;color:var(--bad);margin-top:8px;text-transform:uppercase}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media (max-width:560px){.two{grid-template-columns:1fr}}
+.seg{display:flex;border:1px solid var(--line2)}
+.seg button{flex:1;background:transparent;border:none;color:var(--muted);padding:13px;cursor:pointer;
+  font-family:'Martian Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;transition:.2s}
+.seg button+button{border-left:1px solid var(--line2)}
+.seg button.on{background:var(--cy);color:var(--cta-ink)}
+.mgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media (max-width:560px){.mgrid{grid-template-columns:1fr}}
+.mcard{border:1px solid var(--line2);background:var(--panel);padding:15px 16px;cursor:pointer;display:flex;gap:13px;align-items:center;transition:.2s;position:relative}
+.mcard:hover{border-color:var(--cy)}
+.mcard.on{border-color:var(--cy);background:var(--glow)}
+.mcard.on::after{content:"●";position:absolute;right:14px;color:var(--cy);font-size:9px}
+.mcard input{position:absolute;opacity:0;pointer-events:none}
+.mcard b{font-size:14px;font-weight:700;display:block;letter-spacing:-.01em}
+.mcard span{font-family:'Martian Mono',monospace;font-size:9.5px;color:var(--faint);letter-spacing:.05em}
+.rev{border:1px solid var(--line)}
+.rev .rw{display:grid;grid-template-columns:170px 1fr;border-top:1px solid var(--line);font-size:12.5px}
+.rev .rw:first-child{border-top:none}
+.rev .rw>div{padding:12px 16px}
+.rev .rw .k{font-family:'Martian Mono',monospace;font-size:9px;letter-spacing:.14em;color:var(--muted);text-transform:uppercase;background:var(--panel2);display:flex;align-items:center}
+.rev .rw .v{font-family:'Martian Mono',monospace;font-size:11.5px;color:var(--ink);word-break:break-word}
+.done-view{text-align:center;padding:60px 10px}
+.done-view .ring{width:76px;height:76px;border:1px solid var(--ok);border-radius:50%;margin:0 auto 28px;display:grid;place-items:center;color:var(--ok);font-size:26px;animation:ringpop .5s cubic-bezier(.2,1.5,.4,1)}
+@keyframes ringpop{from{transform:scale(.5);opacity:0}}
+.done-view h3{font-size:26px;font-weight:800;text-transform:uppercase;letter-spacing:-.02em;margin-bottom:12px}
+.done-view p{color:var(--muted);font-size:13.5px;font-weight:500;max-width:40ch;margin:0 auto 26px}
+.refbox{display:inline-block;font-family:'Martian Mono',monospace;font-size:15px;letter-spacing:.08em;color:var(--cy);border:1px dashed var(--line2);padding:14px 26px;background:var(--glow)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001s!important;transition-duration:.001s!important;animation-delay:0s!important}
+  html{scroll-behavior:auto}
+  .rv{opacity:1;transform:none}
+  h1 .l>span{transform:none}
+  .hero-sub,.hero-cta,.readouts{opacity:1}
+}
+</style>
+</head>
+<body>
+
+<!-- ============ top rail ============ -->
+<div class="rail">
+  <span class="id"><i></i>BAI—GATEWAY</span>
+  <span class="stat">REGION<b>eu-west-2 · eu-west-1</b></span>
+  <span class="stat">CLOCK<b id="clock">--:--:--</b></span>
+  <span class="grow"></span>
+  <nav>
+    <a href="#caps">Pillars</a>
+    <a href="#flow">Flow</a>
+    <a href="#manifest">Pre-reqs</a>
+    <a href="#onboard">Onboard</a>
+  </nav>
+  <button class="mode" id="modeBtn">Light</button>
+  <button class="cta-mini" data-open>Onboard →</button>
+</div>
+
+<!-- ============ hero ============ -->
+<header class="hero">
+  <canvas id="net" aria-label="Live simulation of requests routing through the AI gateway. Move your cursor over the canvas to inspect individual packets."></canvas>
+  <div class="hero-veil"></div>
+  <div class="hero-in">
+    <div>
+      <p class="kicker">Enterprise AI infrastructure — live control plane</p>
+      <h1>
+        <span class="l"><span>Every request,</span></span>
+        <span class="l"><span class="hollow">every model —</span></span>
+        <span class="l"><span><span class="accent">governed.</span></span></span>
+      </h1>
+      <p class="hero-sub">One policy-driven gateway in front of 10+ frontier models. Authenticated, rate-limited, inspected and observed — at Barclays scale. You are watching simulated traffic; hover to inspect a packet.</p>
+      <div class="hero-cta">
+        <button class="btn btn-solid" data-open>Start onboarding</button>
+        <a class="btn btn-line" href="#flow">Trace a request</a>
+      </div>
+    </div>
+    <div class="readouts" role="status" aria-label="Live gateway readouts (simulated)">
+      <div class="ro"><div class="k">Requests routed</div><div class="v cy" id="roReq">2,148,006</div></div>
+      <div class="ro"><div class="k">P50 latency</div><div class="v" id="roLat">262<em>ms</em></div></div>
+      <div class="ro"><div class="k">Guardrail pass</div><div class="v ok" id="roGrd">99.2<em>%</em></div></div>
+      <div class="ro"><div class="k">Regions active</div><div class="v">2<em>/ 2 · ACTIVE-ACTIVE</em></div></div>
+    </div>
+  </div>
+  <div class="ticker" aria-hidden="true">
+    <div class="track" id="tickTrack">
+      <span>▸ <b>ENTRAID AUTH</b> — JWT scoped to BAI-GATEWAY</span>
+      <span>▸ <b>RATE LIMITING</b> — per-tenant, tiered allocation</span>
+      <span>▸ <b>GUARDRAILS</b> — passive mode, release 1</span>
+      <span>▸ <b>OBSERVABILITY</b> — tokens · latency · cost</span>
+      <span>▸ <b>MULTI-REGION</b> — active-active, automatic failover</span>
+      <span>▸ <b>OPENAI-COMPATIBLE</b> — /v1/chat/completions · /v1/models</span>
+      <span>▸ <b>M2M ONLY</b> — service identities, not individuals</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============ capability rails ============ -->
+<section id="caps">
+  <p class="sec-tag rv">01 — Platform pillars</p>
+  <h2 class="rv">Four systems.<br><span class="dim">One plane.</span></h2>
+  <p class="sec-sub rv">Everything a workload touches on its way to a model. Hover a rail to expand it.</p>
+  <div class="rails rv">
+    <div class="railcard" tabindex="0">
+      <span class="idx">SYS/01</span><span class="glyph">GATE</span>
+      <h3>Gateway</h3>
+      <p>A single unified API in front of every backend. Multi-region routing, automatic failover, one endpoint to learn.</p>
+      <span class="tag">OpenAI-compatible · /v1</span>
+    </div>
+    <div class="railcard" tabindex="0">
+      <span class="idx">SYS/02</span><span class="glyph">GUARD</span>
+      <h3>Guardrails</h3>
+      <p>Content-safety inspection on every request and response — enforced as policy at the edge, not convention in code.</p>
+      <span class="tag">Passive mode · Release 1</span>
+    </div>
+    <div class="railcard" tabindex="0">
+      <span class="idx">SYS/03</span><span class="glyph">TELEM</span>
+      <h3>Telemetry</h3>
+      <p>Per-tenant usage, latency and cost across every request. If it moved through the plane, it left a trace.</p>
+      <span class="tag">Tokens · Latency · Cost</span>
+    </div>
+    <div class="railcard" tabindex="0">
+      <span class="idx">SYS/04</span><span class="glyph">IDENT</span>
+      <h3>Agent identity</h3>
+      <p>Every workload carries a verified service identity. Scoped roles decide exactly which model families it may invoke.</p>
+      <span class="tag">EntraID JWT · RBAC</span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ flow ============ -->
+<section id="flow" style="padding-top:40px">
+  <p class="sec-tag rv">02 — Request anatomy</p>
+  <h2 class="rv">How a request<br><span class="dim">travels.</span></h2>
+  <p class="sec-sub rv">Four checks stand between your application and inference. Watch them fire in order.</p>
+  <div class="flow rv">
+    <div class="flow-head"><span>TRACE · POST /v1/chat/completions</span><span id="flowClock">t=0.000s</span></div>
+    <div class="flow-body">
+      <div class="flow-col">
+        <div class="fk">Origin</div>
+        <h4>Your application</h4>
+        <p>Authenticates to EntraID and receives a JWT scoped to <span class="mn" style="font-size:11px;color:var(--cy)">BAI-GATEWAY</span>. Sends the request with an Authorization header.</p>
+      </div>
+      <div class="flow-col core">
+        <div class="fk">Control plane</div>
+        <h4>AI Gateway</h4>
+        <p>Validates the token and roles, applies policy, then routes.</p>
+        <div class="stagelist" id="stages">
+          <div class="stage"><i></i>ENTRAID AUTH — validate JWT + roles</div>
+          <div class="stage"><i></i>RATE LIMIT — tenant tier allocation</div>
+          <div class="stage"><i></i>GUARDRAILS — content-safety inspection</div>
+          <div class="stage"><i></i>TELEMETRY — span + usage emitted</div>
+        </div>
+      </div>
+      <div class="flow-col">
+        <div class="fk">Destination</div>
+        <h4>AWS Bedrock</h4>
+        <p>The request lands on the resolved model backend in the active region. The response returns through the same plane — inspected and metered on the way out.</p>
+      </div>
+    </div>
+    <div class="flow-token">
+      <b>TOKEN FLOW</b> · app → EntraID → JWT(aud=<b>BAI-GATEWAY</b>) → Authorization header → gateway validates JWT + roles → routes to model backend
+    </div>
+  </div>
+</section>
+
+<!-- ============ providers / route table ============ -->
+<section style="padding-left:0;padding-right:0;padding-top:40px">
+  <div style="padding:0 4vw">
+    <p class="sec-tag rv">03 — Route table</p>
+    <h2 class="rv">10+ models.<br><span class="dim">One route table.</span></h2>
+    <p class="sec-sub rv">Anthropic · Meta · Amazon · Qwen · OpenAI — every family behind the same unified API.</p>
+  </div>
+  <div class="routes rv" aria-hidden="true">
+    <div class="row r1">
+      <span class="route-chip"><i></i>anthropic.claude-sonnet<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>anthropic.claude-haiku<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>meta.llama-4-maverick<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>amazon.nova-pro<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>qwen.qwen3-235b<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>openai.gpt-oss-120b<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>anthropic.claude-sonnet<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>anthropic.claude-haiku<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>meta.llama-4-maverick<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>amazon.nova-pro<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>qwen.qwen3-235b<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>openai.gpt-oss-120b<span class="p">→ eu-west-2</span></span>
+    </div>
+    <div class="row r2" style="border-top:1px solid var(--line)">
+      <span class="route-chip"><i></i>amazon.nova-lite<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>meta.llama-3-70b<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>anthropic.claude-opus<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>qwen.qwen3-coder<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>openai.gpt-oss-20b<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>amazon.nova-micro<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>amazon.nova-lite<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>meta.llama-3-70b<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>anthropic.claude-opus<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>qwen.qwen3-coder<span class="p">→ eu-west-1</span></span>
+      <span class="route-chip"><i></i>openai.gpt-oss-20b<span class="p">→ eu-west-2</span></span>
+      <span class="route-chip"><i></i>amazon.nova-micro<span class="p">→ eu-west-1</span></span>
+    </div>
+  </div>
+</section>
+
+<!-- ============ manifest ============ -->
+<section id="manifest" style="padding-top:40px">
+  <p class="sec-tag rv">04 — Boarding manifest</p>
+  <h2 class="rv">Have these<br><span class="dim">before you board.</span></h2>
+  <p class="sec-sub rv">Five items, checked at the gate. The onboarding form asks for each one — bring them and the whole thing takes three minutes.</p>
+  <div class="manifest rv">
+    <div class="mrow"><div class="n">REQ/01</div><h4>ITSI</h4><p>An <b>IT Service Instance</b> registered in ServiceFirst for your application — one per environment.</p></div>
+    <div class="mrow"><div class="n">REQ/02</div><h4>Entra App SPN</h4><p>An <b>Entra App Registration</b> giving your workload a service identity. No SPN, no plane.</p></div>
+    <div class="mrow"><div class="n">REQ/03</div><h4>GenAI CoE approval</h4><p>A <b>JIRA reference</b> from the GenAI Centre of Excellence confirming pilot approval, with Champion sign-off via email.</p></div>
+    <div class="mrow"><div class="n">REQ/04</div><h4>Models required</h4><p>The model families your application needs — this determines which <b>Models.&lt;Family&gt;.Invoke</b> roles are assigned.</p></div>
+    <div class="mrow"><div class="n">REQ/05</div><h4>GenAI CoE sign-off</h4><p><b>CSO email approval</b> for the requested families — required by the Entra/IAM team before role assignment.</p></div>
+  </div>
+</section>
+
+<!-- ============ onboarding ============ -->
+<section id="onboard" style="padding-top:40px">
+  <p class="sec-tag rv">05 — Clearance sequence</p>
+  <h2 class="rv">Four steps<br><span class="dim">to production.</span></h2>
+  <p class="sec-sub rv">From approval to a live tenant behind the control plane.</p>
+  <div class="obsteps rv">
+    <div class="ob"><h4>GAIGC approval</h4><p>Already approved? Supply your GenAI CoE reference and skip straight to provisioning.</p></div>
+    <div class="ob"><h4>UAT provisioning</h4><p>The AI Platform team reviews and provisions your tenant in UAT. Endpoints arrive; integration begins.</p></div>
+    <div class="ob"><h4>Production readiness</h4><p>Ready for prod? Raise a follow-up request with the production pre-requisites.</p></div>
+    <div class="ob"><h4>Prod provisioning</h4><p>Your tenant goes live in Prod. Every request from here on is governed by the plane.</p></div>
+  </div>
+
+  <div class="launch rv">
+    <div>
+      <h3>Clear for<br>departure?</h3>
+      <span class="mn">SLA 5 working days · owner: AI platform team</span>
+    </div>
+    <button class="btn btn-solid" data-open style="padding:24px 40px;font-size:13px">Start onboarding now</button>
+  </div>
+</section>
+
+<!-- ============ fit ============ -->
+<section style="padding-top:40px">
+  <p class="sec-tag rv">06 — Scope · Release 1</p>
+  <h2 class="rv">Read this<br><span class="dim">before requesting.</span></h2>
+  <div class="fit rv" style="margin-top:52px">
+    <div class="fcol yes">
+      <p class="fh y">FOR</p>
+      <h3>Who boards</h3>
+      <ul>
+        <li>Applications calling LLMs as part of backend logic</li>
+        <li>Services embedding AI — summarisation, classification, generation</li>
+        <li>Agents and automation pipelines requiring governed LLM access</li>
+        <li>Production workloads with an ITSI, owning team and service identity</li>
+        <li>Machine-to-machine only — not interactive chat for individuals</li>
+      </ul>
+    </div>
+    <div class="fcol yes">
+      <p class="fh g">SHIPS</p>
+      <h3>What you get</h3>
+      <ul>
+        <li>OpenAI-compatible API — <code>/v1/chat/completions</code>, <code>/v1/models</code></li>
+        <li>Access to 10+ leading LLMs via AWS Bedrock</li>
+        <li>Identity &amp; access control via EntraID JWT</li>
+        <li>Content-safety guardrails (passive mode)</li>
+        <li>Per-tenant rate limiting with tiered allocation</li>
+        <li>Multi-region active-active with automatic failover</li>
+      </ul>
+    </div>
+    <div class="fcol no">
+      <p class="fh n">HOLDS</p>
+      <h3>Not in release 1</h3>
+      <ul>
+        <li>Native Bedrock Converse API — OpenAI-compatible only</li>
+        <li>MCP gateway — tool calling via Model Context Protocol</li>
+        <li>Agent gateway — A2A agent-to-agent communication</li>
+        <li>Multi-provider routing — Azure OpenAI, self-hosted models</li>
+        <li>Inline guardrail blocking — passive/observe only</li>
+        <li>Bring your own model / inference / AWS account</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <span>BAI GATEWAY — AI CONTROL PLANE</span>
+  <span class="r">SIMULATED TELEMETRY · FOR ILLUSTRATION</span>
+</footer>
+</main>
+
+<!-- ============ drawer ============ -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dTitle">
+  <div class="d-head"><b id="dTitle">ONBOARDING&nbsp;REQUEST</b>&nbsp;· BAI-GATEWAY
+    <button class="d-close" id="dClose" aria-label="Close onboarding form">✕</button>
+  </div>
+  <div class="d-prog" id="dProg">
+    <span class="cur">01 App</span><span>02 Governance</span><span>03 Models</span><span>04 Review</span>
+  </div>
+  <div class="d-body">
+
+    <div class="pane cur" data-p="0">
+      <h3 class="p-title">Application</h3>
+      <p class="p-sub">Identify the workload requesting access to the plane.</p>
+      <div class="fld">
+        <label>Application name <span class="rq">REQUIRED</span></label>
+        <input type="text" id="fName" placeholder="Trade Surveillance Copilot">
+        <div class="emsg">Enter the application name</div>
+      </div>
+      <div class="two">
+        <div class="fld">
+          <label>ITSI · ServiceFirst <span class="rq">REQUIRED</span></label>
+          <input type="text" id="fItsi" placeholder="ITSI-0000000">
+          <div class="hint">One IT Service Instance per environment.</div>
+          <div class="emsg">Format: ITSI-#######</div>
+        </div>
+        <div class="fld">
+          <label>Owning team contact <span class="rq">REQUIRED</span></label>
+          <input type="email" id="fEmail" placeholder="team-dl@barclays.com">
+          <div class="emsg">Enter a valid email</div>
+        </div>
+      </div>
+      <div class="fld">
+        <label>Entra App SPN · client ID <span class="rq">REQUIRED</span></label>
+        <input type="text" id="fSpn" placeholder="00000000-0000-0000-0000-000000000000">
+        <div class="emsg">Enter a valid GUID</div>
+      </div>
+      <div class="fld">
+        <label>Target environment</label>
+        <div class="seg" id="segEnv"><button type="button" class="on">UAT</button><button type="button">UAT + PROD</button></div>
+        <div class="hint">Prod requires a follow-up readiness review.</div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="1">
+      <h3 class="p-title">Governance</h3>
+      <p class="p-sub">Approvals checked at the gate before provisioning.</p>
+      <div class="fld">
+        <label>GenAI CoE JIRA reference <span class="rq">REQUIRED</span></label>
+        <input type="text" id="fJira" placeholder="GAIGC-1234">
+        <div class="hint">Pilot approval from the GenAI Centre of Excellence.</div>
+        <div class="emsg">Format: KEY-1234</div>
+      </div>
+      <div class="fld">
+        <label>Champion sign-off</label>
+        <div class="seg" id="segChamp"><button type="button" class="on">RECEIVED · EMAIL</button><button type="button">PENDING</button></div>
+      </div>
+      <div class="fld">
+        <label>CSO sign-off reference <span style="color:var(--faint)">OPTIONAL</span></label>
+        <input type="text" id="fCso" placeholder="Email date or reference">
+        <div class="hint">Required by Entra/IAM before role assignment — can follow later.</div>
+      </div>
+    </div>
+
+    <div class="pane" data-p="2">
+      <h3 class="p-title">Model access</h3>
+      <p class="p-sub">Selections map to <span class="mn" style="font-size:11px;color:var(--cy)">Models.&lt;Family&gt;.Invoke</span> roles.</p>
+      <div class="fld">
+        <label>Model families <span class="rq">SELECT ≥ 1</span></label>
+        <div class="mgrid" id="mgrid">
+          <label class="mcard"><input type="checkbox" value="Anthropic Claude"><span><b>Anthropic Claude</b><span>anthropic.claude-*</span></span></label>
+          <label class="mcard"><input type="checkbox" value="Meta Llama"><span><b>Meta Llama</b><span>meta.llama-*</span></span></label>
+          <label class="mcard"><input type="checkbox" value="Amazon Nova"><span><b>Amazon Nova</b><span>amazon.nova-*</span></span></label>
+          <label class="mcard"><input type="checkbox" value="Qwen"><span><b>Qwen</b><span>qwen.qwen3-*</span></span></label>
+          <label class="mcard"><input type="checkbox" value="OpenAI"><span><b>OpenAI</b><span>openai.gpt-oss-*</span></span></label>
+        </div>
+        <div class="emsg" id="mErr">Select at least one model family</div>
+      </div>
+      <div class="fld" style="max-width:360px">
+        <label>Expected throughput tier</label>
+        <select id="fTier">
+          <option>TIER 1 — ≤ 50K TOKENS/MIN</option>
+          <option>TIER 2 — ≤ 250K TOKENS/MIN</option>
+          <option>TIER 3 — 250K+ (REVIEW)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="pane" data-p="3">
+      <h3 class="p-title">Review</h3>
+      <p class="p-sub">Final check before the request is raised with the AI Platform team.</p>
+      <div class="rev" id="revBox"></div>
+      <p class="hint" style="margin-top:16px;color:var(--faint);font-size:11px;font-weight:500">UAT provisioning typically completes within 5 working days.</p>
+    </div>
+
+    <div class="pane" data-p="4">
+      <div class="done-view">
+        <div class="ring">✓</div>
+        <h3>Cleared for UAT</h3>
+        <p>Your request is with the AI Platform team. Quote this reference in any follow-up:</p>
+        <span class="refbox" id="refBox">BAI-2026-0000</span>
+      </div>
+    </div>
+
+  </div>
+  <div class="d-foot">
+    <button class="btn btn-line" id="dBack" style="visibility:hidden;padding:14px 20px">← Back</button>
+    <span class="sp"></span>
+    <button class="btn btn-solid" id="dNext" style="padding:14px 26px">Continue</button>
+  </div>
+</aside>
+
+<script>
+"use strict";
+/* ============================================================
+   theme
+============================================================ */
+const root = document.documentElement;
+root.dataset.theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+const modeBtn = document.getElementById("modeBtn");
+const syncMode = () => modeBtn.textContent = root.dataset.theme === "dark" ? "Light" : "Dark";
+syncMode();
+modeBtn.addEventListener("click", () => {
+  root.dataset.theme = root.dataset.theme === "dark" ? "light" : "dark";
+  syncMode(); netPalette();
+});
+
+/* ============================================================
+   clock + readouts
+============================================================ */
+const pad = n => String(n).padStart(2, "0");
+setInterval(() => {
+  const d = new Date();
+  document.getElementById("clock").textContent =
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} UTC${d.getTimezoneOffset()<=0?"+":"-"}${Math.abs(d.getTimezoneOffset()/60)}`;
+}, 1000);
+
+let reqCount = 2148006;
+const fmt = n => n.toLocaleString("en-GB");
+setInterval(() => {
+  reqCount += 1 + Math.floor(Math.random() * 4);
+  document.getElementById("roReq").textContent = fmt(reqCount);
+  document.getElementById("roLat").innerHTML = (238 + Math.floor(Math.random() * 70)) + "<em>ms</em>";
+  document.getElementById("roGrd").innerHTML = (99 + Math.random() * 0.9).toFixed(1) + "<em>%</em>";
+}, 1400);
+
+/* ============================================================
+   scroll reveal
+============================================================ */
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+}), { threshold: 0.12 });
+document.querySelectorAll(".rv").forEach(el => io.observe(el));
+
+/* ============================================================
+   flow stage sequencer
+============================================================ */
+const stages = [...document.querySelectorAll("#stages .stage")];
+const flowClock = document.getElementById("flowClock");
+let si = -1;
+setInterval(() => {
+  si = (si + 1) % (stages.length + 2);
+  stages.forEach((s, i) => s.classList.toggle("lit", i <= si));
+  flowClock.textContent = "t=" + (si < 0 ? 0 : Math.min(si + 1, stages.length) * 0.006).toFixed(3) + "s";
+}, 800);
+
+/* ============================================================
+   canvas: live traffic + inspector
+============================================================ */
+const cv = document.getElementById("net");
+const cx = cv.getContext("2d");
+const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let W = 0, H = 0, DPR = 1, GATE = { x: 0, y: 0, r: 42 };
+let pal = {};
+
+function netPalette() {
+  const s = getComputedStyle(root);
+  pal = {
+    pkt:  s.getPropertyValue("--canvas-pkt").trim(),
+    flag: s.getPropertyValue("--canvas-flag").trim(),
+    src:  s.getPropertyValue("--canvas-src").trim(),
+    ink:  s.getPropertyValue("--ink").trim(),
+    line: s.getPropertyValue("--line2").trim(),
+    bg:   s.getPropertyValue("--panel").trim(),
+  };
+}
+netPalette();
+
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2);
+  W = cv.clientWidth; H = cv.clientHeight;
+  cv.width = W * DPR; cv.height = H * DPR;
+  cx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  GATE = { x: W * 0.56, y: H * 0.42, r: Math.min(52, W * 0.045) };
+}
+resize();
+addEventListener("resize", resize);
+
+/* packet model — quadratic bezier in two legs (src→gate, gate→dst) */
+const TENANTS = ["fx-risk-svc","kyc-triage","doc-intel","payments-nlg","fraud-agent","surveillance-ml","client-briefs","ops-copilot"];
+const MODELS  = ["claude-sonnet","claude-haiku","llama-4-maverick","nova-pro","qwen3-235b","gpt-oss-120b"];
+const packets = [];
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+
+function spawn() {
+  const flagged = Math.random() < 0.09;
+  const sy = rand(H * 0.08, H * 0.86);
+  const dy = rand(H * 0.10, H * 0.80);
+  packets.push({
+    t: 0, leg: 0, flagged, dead: false, hold: 0,
+    speed: rand(0.0038, 0.007),
+    a: { x: -8, y: sy },
+    c1: { x: GATE.x * 0.45, y: sy + rand(-40, 40) },
+    b: { x: GATE.x, y: GATE.y },
+    c2: { x: GATE.x + (W - GATE.x) * 0.55, y: dy + rand(-40, 40) },
+    d: { x: W + 8, y: dy },
+    meta: {
+      tenant: pick(TENANTS),
+      model: pick(MODELS),
+      lat: Math.floor(rand(180, 640)),
+      verdict: flagged ? "FLAG · injection 0.91" : "PASS · clean 0.0" + Math.floor(rand(1, 4)),
+    },
+  });
+}
+
+function qbez(p0, pc, p1, t) {
+  const u = 1 - t;
+  return {
+    x: u * u * p0.x + 2 * u * t * pc.x + t * t * p1.x,
+    y: u * u * p0.y + 2 * u * t * pc.y + t * t * p1.y,
+  };
+}
+function pos(p) {
+  return p.leg === 0 ? qbez(p.a, p.c1, p.b, p.t) : qbez(p.b, p.c2, p.d, p.t);
+}
+
+const mouse = { x: -999, y: -999, on: false };
+cv.addEventListener("pointermove", e => {
+  const r = cv.getBoundingClientRect();
+  mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top; mouse.on = true;
+});
+cv.addEventListener("pointerleave", () => mouse.on = false);
+
+let ringA = 0, pulse = 0, lastSpawn = 0;
+
+function drawGate() {
+  cx.save();
+  cx.translate(GATE.x, GATE.y);
+  /* pulse halo */
+  if (pulse > 0) {
+    cx.beginPath(); cx.arc(0, 0, GATE.r + 14 * (1 - pulse), 0, 7);
+    cx.strokeStyle = pal.pkt; cx.globalAlpha = pulse * 0.5; cx.stroke();
+    cx.globalAlpha = 1;
+  }
+  /* rotating dashed ring */
+  cx.beginPath(); cx.arc(0, 0, GATE.r, 0, 7);
+  cx.setLineDash([6, 7]); cx.lineDashOffset = -ringA;
+  cx.strokeStyle = pal.pkt; cx.lineWidth = 1.4; cx.stroke();
+  cx.setLineDash([]);
+  /* inner core */
+  cx.beginPath(); cx.arc(0, 0, GATE.r * 0.55, 0, 7);
+  cx.strokeStyle = pal.line; cx.stroke();
+  cx.fillStyle = pal.ink; cx.font = "600 9px 'Martian Mono'";
+  cx.textAlign = "center";
+  cx.fillText("GATEWAY", 0, 3);
+  cx.fillStyle = pal.src; cx.font = "300 8px 'Martian Mono'";
+  cx.fillText("POLICY·ROUTE", 0, GATE.r + 20);
+  cx.restore();
+}
+
+function frame(now) {
+  cx.clearRect(0, 0, W, H);
+
+  /* faint lane guides */
+  cx.strokeStyle = pal.line; cx.lineWidth = 1; cx.globalAlpha = 0.35;
+  cx.beginPath();
+  for (let y = H * 0.12; y < H * 0.9; y += H * 0.19) { cx.moveTo(0, y); cx.lineTo(W, y); }
+  cx.stroke(); cx.globalAlpha = 1;
+
+  ringA += 0.35;
+  if (pulse > 0) pulse -= 0.03;
+  drawGate();
+
+  if (now - lastSpawn > 240 && packets.length < 46) { spawn(); lastSpawn = now; }
+
+  let nearest = null, nd = 3600; /* 60px squared */
+  for (const p of packets) {
+    if (p.hold > 0) { p.hold--; continue; }
+    p.t += p.speed;
+    if (p.t >= 1) {
+      if (p.leg === 0) {
+        pulse = 1;
+        if (p.flagged) { p.dead = true; continue; }  /* absorbed at the gate */
+        p.leg = 1; p.t = 0; p.hold = 6;
+      } else { p.dead = true; continue; }
+    }
+    const q = pos(p);
+    /* trail */
+    const q2 = pos({ ...p, t: Math.max(0, p.t - 0.05) });
+    cx.beginPath(); cx.moveTo(q2.x, q2.y); cx.lineTo(q.x, q.y);
+    cx.strokeStyle = p.flagged ? pal.flag : pal.pkt;
+    cx.globalAlpha = 0.35; cx.lineWidth = 1.4; cx.stroke(); cx.globalAlpha = 1;
+    /* dot */
+    cx.beginPath(); cx.arc(q.x, q.y, p.flagged ? 3 : 2.4, 0, 7);
+    cx.fillStyle = p.flagged ? pal.flag : pal.pkt; cx.fill();
+
+    if (mouse.on) {
+      const dx = q.x - mouse.x, dy = q.y - mouse.y, d = dx * dx + dy * dy;
+      if (d < nd) { nd = d; nearest = { p, q }; }
+    }
+  }
+  for (let i = packets.length - 1; i >= 0; i--) if (packets[i].dead) packets.splice(i, 1);
+
+  /* inspector crosshair */
+  if (nearest) {
+    const { p, q } = nearest;
+    const col = p.flagged ? pal.flag : pal.pkt;
+    cx.strokeStyle = col; cx.globalAlpha = 0.4; cx.lineWidth = 1;
+    cx.beginPath(); cx.moveTo(0, q.y); cx.lineTo(W, q.y); cx.moveTo(q.x, 0); cx.lineTo(q.x, H); cx.stroke();
+    cx.globalAlpha = 1;
+    cx.beginPath(); cx.arc(q.x, q.y, 8, 0, 7); cx.stroke();
+    /* label card */
+    const lines = [
+      "TENANT  " + p.meta.tenant,
+      "MODEL   " + p.meta.model,
+      "LAT     " + p.meta.lat + "ms",
+      "GUARD   " + p.meta.verdict,
+    ];
+    cx.font = "400 9.5px 'Martian Mono'";
+    const wMax = Math.max(...lines.map(l => cx.measureText(l).width)) + 24;
+    const bx = Math.min(q.x + 16, W - wMax - 10), by = Math.max(q.y - 74, 10);
+    cx.fillStyle = pal.bg; cx.globalAlpha = 0.94;
+    cx.fillRect(bx, by, wMax, 62); cx.globalAlpha = 1;
+    cx.strokeStyle = col; cx.strokeRect(bx, by, wMax, 62);
+    cx.fillStyle = pal.ink; cx.textAlign = "left";
+    lines.forEach((l, i) => cx.fillText(l, bx + 12, by + 16 + i * 13.5));
+  }
+
+  requestAnimationFrame(frame);
+}
+
+if (reduced) {
+  /* static frame: lanes + gate + a scatter of dots */
+  for (let i = 0; i < 26; i++) spawn();
+  packets.forEach(p => { p.t = Math.random(); p.leg = Math.random() > 0.5 ? 1 : 0; });
+  drawGate();
+  packets.forEach(p => {
+    const q = pos(p);
+    cx.beginPath(); cx.arc(q.x, q.y, 2.4, 0, 7);
+    cx.fillStyle = p.flagged ? pal.flag : pal.pkt; cx.fill();
+  });
+} else {
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   drawer form
+============================================================ */
+const scrim  = document.getElementById("scrim");
+const drawer = document.getElementById("drawer");
+const panes  = [...drawer.querySelectorAll(".pane")];
+const prog   = [...document.querySelectorAll("#dProg span")];
+const dBack  = document.getElementById("dBack");
+const dNext  = document.getElementById("dNext");
+let step = 0, lastFocus = null;
+
+const openDrawer = () => {
+  lastFocus = document.activeElement;
+  scrim.classList.add("on"); drawer.classList.add("on");
+  document.body.style.overflow = "hidden";
+  go(0);
+  setTimeout(() => document.getElementById("fName").focus(), 300);
+};
+const closeDrawer = () => {
+  scrim.classList.remove("on"); drawer.classList.remove("on");
+  document.body.style.overflow = "";
+  lastFocus && lastFocus.focus();
+};
+document.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", openDrawer));
+document.getElementById("dClose").addEventListener("click", closeDrawer);
+scrim.addEventListener("click", closeDrawer);
+addEventListener("keydown", e => { if (e.key === "Escape" && drawer.classList.contains("on")) closeDrawer(); });
+
+function go(n) {
+  step = n;
+  panes.forEach((p, i) => p.classList.toggle("cur", i === n));
+  prog.forEach((s, i) => { s.className = i === Math.min(n, 3) ? "cur" : i < n ? "done" : ""; });
+  dBack.style.visibility = (n === 0 || n === 4) ? "hidden" : "visible";
+  dNext.textContent = n === 3 ? "Submit request" : n === 4 ? "Close" : "Continue";
+  if (n === 3) buildReview();
+  drawer.querySelector(".d-body").scrollTop = 0;
+}
+
+/* segmented */
+function seg(id) {
+  const el = document.getElementById(id);
+  el.querySelectorAll("button").forEach(b => b.addEventListener("click", () => {
+    el.querySelectorAll("button").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+  }));
+  return () => el.querySelector(".on").textContent;
+}
+const getEnv = seg("segEnv"), getChamp = seg("segChamp");
+
+/* model cards */
+document.querySelectorAll(".mcard input").forEach(cb => cb.addEventListener("change", () => {
+  cb.closest(".mcard").classList.toggle("on", cb.checked);
+  document.getElementById("mErr").style.display = "none";
+}));
+
+/* validation */
+const show = (el, bad) => {
+  el.classList.toggle("err", bad);
+  const m = el.parentElement.querySelector(".emsg");
+  if (m) m.style.display = bad ? "block" : "none";
+  return !bad;
+};
+const RX = {
+  itsi:  /^ITSI-\d{4,}$/i,
+  guid:  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  jira:  /^[A-Z][A-Z0-9]+-\d+$/i,
+};
+const $v = id => document.getElementById(id).value.trim();
+
+function validate(n) {
+  let ok = true;
+  if (n === 0) {
+    ok = show(document.getElementById("fName"),  !$v("fName")) && ok;
+    ok = show(document.getElementById("fItsi"),  !RX.itsi.test($v("fItsi"))) && ok;
+    ok = show(document.getElementById("fEmail"), !RX.email.test($v("fEmail"))) && ok;
+    ok = show(document.getElementById("fSpn"),   !RX.guid.test($v("fSpn"))) && ok;
+  }
+  if (n === 1) ok = show(document.getElementById("fJira"), !RX.jira.test($v("fJira"))) && ok;
+  if (n === 2) {
+    const any = [...document.querySelectorAll(".mcard input")].some(c => c.checked);
+    if (!any) { document.getElementById("mErr").style.display = "block"; ok = false; }
+  }
+  return ok;
+}
+
+function buildReview() {
+  const esc = s => s.replace(/</g, "&lt;");
+  const models = [...document.querySelectorAll(".mcard input:checked")].map(c => c.value).join(" · ") || "—";
+  const rows = [
+    ["Application", $v("fName")],
+    ["ITSI", $v("fItsi").toUpperCase()],
+    ["Entra App SPN", $v("fSpn").toLowerCase()],
+    ["Owning team", $v("fEmail")],
+    ["Environment", getEnv()],
+    ["GenAI CoE ref", $v("fJira").toUpperCase()],
+    ["Champion sign-off", getChamp()],
+    ["CSO reference", $v("fCso") || "—"],
+    ["Model families", models],
+    ["Throughput", document.getElementById("fTier").value],
+  ];
+  document.getElementById("revBox").innerHTML = rows
+    .map(([k, v]) => `<div class="rw"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`)
+    .join("");
+}
+
+dNext.addEventListener("click", () => {
+  if (step === 4) { closeDrawer(); return; }
+  if (step === 3) {
+    document.getElementById("refBox").textContent =
+      "BAI-2026-" + String(Math.floor(1000 + Math.random() * 9000));
+    go(4); return;
+  }
+  if (!validate(step)) return;
+  go(step + 1);
+});
+dBack.addEventListener("click", () => { if (step > 0 && step < 4) go(step - 1); });
+</script>
+</body>
+</html>
