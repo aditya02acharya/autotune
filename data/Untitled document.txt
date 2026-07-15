@@ -1,0 +1,2030 @@
+﻿# Modern Chat-Agent Harness
+
+
+The uploaded book is a useful **pattern catalogue**, covering routing, prompt chaining, parallelisation, planning, reflection, tool use, MCP, memory, multi-agent collaboration, recovery, guardrails, monitoring, prioritisation and resource-aware execution. The production system should not implement each pattern as an independent “agent,” however. It should combine them behind a deterministic orchestration kernel, using LLM autonomy only where semantic judgement is genuinely required. fileciteturn0file0
+
+
+The key architectural principle is:
+
+
+> **Deterministic control plane, probabilistic reasoning workers.**
+
+
+The LLM may decide *what information is required* or *how a problem should be decomposed*, but infrastructure code controls budgets, permissions, concurrency, retries, state transitions, validation and side effects.
+
+
+---
+
+
+## 1. High-level architecture
+
+
+```mermaid
+flowchart TB
+    U[Chat Client / API Consumer]
+
+
+    subgraph EDGE["Interaction Edge"]
+        GW[API Gateway]
+        AUTH[Auth / Tenant / Entitlements]
+        STREAM[Stream Manager<br/>SSE or WebSocket]
+        IDEMP[Idempotency + Request Deduplication]
+    end
+
+
+    subgraph CONTROL["Agent Control Plane"]
+        TURN[Turn Coordinator]
+        HOOKS[Hook Runtime]
+        POLICY[Policy & Guardrail Engine]
+        ROUTER[Complexity and Capability Router]
+        PLAN[Planner / Task Graph Compiler]
+        EXEC[Async Graph Executor]
+        VERIFY[Verification Controller]
+        RESPONSE[Response Composer]
+    end
+
+
+    subgraph STATE["State and Context Plane"]
+        SESSION[Session Store]
+        EVENTS[Immutable Event Log]
+        WORK[Working State / Checkpoints]
+        MEMORY[Long-term Memory]
+        CONTEXT[Context Builder]
+        ARTIFACTS[Artifact Store]
+    end
+
+
+    subgraph MODELS["Model Plane"]
+        FAST[Fast Model]
+        REASON[Reasoning Model]
+        VISION[Multimodal Model]
+        JUDGE[Verifier / Judge Model]
+        EMBED[Embedding / Reranker]
+    end
+
+
+    subgraph TOOLS["Tool and Agent Plane"]
+        MCPGW[MCP Gateway]
+        REG[Tool Capability Registry]
+        MCPS[MCP Servers]
+        LOCAL[Native Internal Tools]
+        SUB[Sub-agent Runtime]
+        HITL[Human Approval Service]
+    end
+
+
+    subgraph PLATFORM["Reliability and Operations"]
+        QUEUE[Task Queue]
+        CACHE[Semantic and Result Cache]
+        OTEL[Tracing / Metrics / Logs]
+        LIMIT[Rate Limits / Quotas]
+        CONFIG[Prompt / Policy / Model Registry]
+        EVAL[Evaluation and Replay]
+    end
+
+
+    U --> GW
+    GW --> AUTH --> IDEMP --> TURN
+    TURN <--> STREAM
+
+
+    TURN --> HOOKS
+    HOOKS --> POLICY
+    POLICY --> ROUTER
+    ROUTER --> PLAN
+    PLAN --> EXEC
+    EXEC --> VERIFY
+    VERIFY --> RESPONSE
+    RESPONSE --> STREAM
+
+
+    TURN <--> SESSION
+    TURN --> EVENTS
+    EXEC <--> WORK
+    CONTEXT --> EXEC
+    SESSION --> CONTEXT
+    MEMORY --> CONTEXT
+    ARTIFACTS --> CONTEXT
+
+
+    ROUTER --> FAST
+    PLAN --> REASON
+    EXEC --> FAST
+    EXEC --> REASON
+    EXEC --> VISION
+    VERIFY --> JUDGE
+    CONTEXT --> EMBED
+
+
+    EXEC --> MCPGW
+    MCPGW --> REG
+    MCPGW --> MCPS
+    EXEC --> LOCAL
+    EXEC --> SUB
+    EXEC --> HITL
+
+
+    EXEC <--> QUEUE
+    EXEC <--> CACHE
+    CONTROL --> OTEL
+    MCPGW --> LIMIT
+    CONTROL --> CONFIG
+    EVENTS --> EVAL
+```
+
+
+This architecture separates:
+
+
+- **Interaction:** connections, streaming and cancellation.
+- **Control:** routing, planning and orchestration.
+- **State:** conversation, task and memory.
+- **Execution:** models, tools and sub-agents.
+- **Assurance:** guardrails, validation and verification.
+- **Operations:** telemetry, replay, cost and evaluation.
+
+
+---
+
+
+# 2. Core request lifecycle
+
+
+A request should become a durable `Turn`, not merely an HTTP call.
+
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Client
+    participant S as Stream Manager
+    participant T as Turn Coordinator
+    participant G as Guardrails
+    participant R as Router
+    participant P as Planner
+    participant E as Graph Executor
+    participant M as Models
+    participant X as MCP / Tools
+    participant V as Verifier
+    participant D as State Stores
+
+
+    C->>S: POST message / open stream
+    S->>T: StartTurn(command)
+    T->>D: Create turn + append event
+    T-->>C: turn.accepted
+
+
+    T->>G: Input checks
+    G-->>T: allow / transform / block / escalate
+
+
+    T->>R: Classify complexity, risk, capabilities
+    R-->>T: execution profile
+
+
+    alt Direct answer
+        T->>M: Generate answer
+        M-->>S: token deltas
+    else Tool workflow
+        T->>P: Compile bounded task graph
+        P-->>T: validated plan
+        T->>E: Execute graph
+        par Independent branches
+            E->>X: Tool call A
+            E->>X: Tool call B
+            E->>M: Analysis task C
+        end
+        X-->>E: structured results
+        M-->>E: structured result
+        E->>D: checkpoint + events
+        E-->>S: progress and partial results
+    end
+
+
+    T->>V: Verify evidence, claims and policy
+    V-->>T: pass / repair / abstain / escalate
+    T->>G: Output checks
+    G-->>T: release / redact / block
+    T->>D: commit turn and memory candidates
+    T-->>S: final response envelope
+    S-->>C: response.completed
+```
+
+
+## Stream events
+
+
+Do not stream only text tokens. Stream typed lifecycle events:
+
+
+```text
+turn.accepted
+turn.classified
+plan.created
+plan.updated
+task.started
+task.progress
+tool.authorization_required
+tool.started
+tool.partial
+tool.completed
+artifact.created
+citation.added
+answer.delta
+verification.started
+verification.failed
+answer.repaired
+response.completed
+response.failed
+```
+
+
+This lets the client show meaningful progress without exposing internal chain-of-thought.
+
+
+---
+
+
+# 3. Query difficulty ladder
+
+
+Do not run every request through a planner and multi-agent system. The router chooses the cheapest reliable execution mode.
+
+
+| Level | Query type | Execution |
+|---|---|---|
+| L0 | Greeting, rewrite, simple explanation | One fast model call |
+| L1 | Factual answer using conversation context | Context build + one model call |
+| L2 | One retrieval or deterministic tool | Single tool + response model |
+| L3 | Several independent tools | Parallel fan-out + synthesis |
+| L4 | Dependent multi-step task | Bounded task graph |
+| L5 | Complex cross-domain task | Planner + specialist workers + verifier |
+| L6 | Long-running or side-effecting workflow | Durable workflow + checkpoints + approval gates |
+
+
+The uploaded book similarly distinguishes between a reasoning-only system, a tool-connected problem solver, a strategic planner and collaborative multi-agent systems. It also recommends routing inexpensive tasks to cheaper models and difficult requests to stronger models. fileciteturn1file4
+
+
+## Router output
+
+
+The router must emit structured data:
+
+
+```json
+{
+  "route": "parallel_tool_workflow",
+  "complexity": 3,
+  "risk": "medium",
+  "required_capabilities": [
+    "document_search",
+    "calculator"
+  ],
+  "model_profile": "balanced",
+  "verification_profile": "evidence_required",
+  "max_wall_time_ms": 20000,
+  "max_model_calls": 4,
+  "max_tool_calls": 8,
+  "allow_subagents": false,
+  "requires_approval": false,
+  "confidence": 0.91
+}
+```
+
+
+The route may be determined by a cascade:
+
+
+1. Deterministic rules for obvious cases.
+2. Small classifier for intent and complexity.
+3. Embedding-based capability matching.
+4. LLM router only for ambiguous cases.
+
+
+This avoids spending a powerful model call just to decide whether a calculator is needed.
+
+
+---
+
+
+# 4. Orchestration kernel
+
+
+The harness should use an explicit **task graph**, not an unconstrained “while the model wants another tool” loop.
+
+
+```mermaid
+flowchart LR
+    Q[User Goal] --> D[Decompose]
+    D --> G[Compile Task Graph]
+    G --> VALIDATE[Static Validation]
+    VALIDATE --> READY[Ready Queue]
+
+
+    READY --> SCHED[Budget-aware Scheduler]
+
+
+    SCHED --> N1[Model Task]
+    SCHED --> N2[Tool Task]
+    SCHED --> N3[Sub-agent Task]
+    SCHED --> N4[Deterministic Task]
+    SCHED --> N5[Human Approval]
+
+
+    N1 --> RESULT[Typed Results]
+    N2 --> RESULT
+    N3 --> RESULT
+    N4 --> RESULT
+    N5 --> RESULT
+
+
+    RESULT --> CHECK[Node Validation]
+    CHECK -->|pass| COMMIT[Checkpoint]
+    CHECK -->|retryable| RETRY[Retry / Fallback]
+    CHECK -->|repairable| REPLAN[Local Replan]
+    CHECK -->|unsafe| STOP[Stop / Escalate]
+
+
+    COMMIT --> READY
+    COMMIT --> DONE{Graph complete?}
+    DONE -->|No| READY
+    DONE -->|Yes| SYNTH[Synthesis]
+```
+
+
+## Node types
+
+
+Every node should have one of a small number of known execution semantics:
+
+
+```python
+NodeKind = Literal[
+    "llm",
+    "tool",
+    "retrieval",
+    "transform",
+    "branch",
+    "map",
+    "reduce",
+    "subagent",
+    "approval",
+    "verification"
+]
+```
+
+
+## Task specification
+
+
+```json
+{
+  "task_id": "task_42",
+  "kind": "tool",
+  "capability": "calendar.find_availability",
+  "depends_on": ["task_10"],
+  "input_refs": {
+    "attendees": "$.tasks.task_10.output.people",
+    "date_range": "$.turn.constraints.date_range"
+  },
+  "output_schema": "AvailabilityResult/v2",
+  "timeout_ms": 5000,
+  "retry_policy": "transient_api",
+  "side_effect_class": "read_only",
+  "verification": "schema_and_freshness",
+  "priority": 70
+}
+```
+
+
+## Why this is better than free-form ReAct
+
+
+A free-form loop tends to create:
+
+
+- repeated or circular tool calls;
+- hidden dependency errors;
+- poor cancellation;
+- unclear budgets;
+- uncontrolled context growth;
+- difficult replay;
+- hard-to-test behaviour.
+
+
+A task graph gives the system:
+
+
+- explicit dependencies;
+- bounded execution;
+- parallel scheduling;
+- per-node timeouts;
+- checkpoints;
+- traceability;
+- deterministic replay of non-LLM steps.
+
+
+Prompt chaining is appropriate for dependent operations, while parallelisation is appropriate for independent work; the book explicitly describes combining parallel information extraction with sequential synthesis and review. fileciteturn0file0
+
+
+---
+
+
+# 5. Async and stream-first execution
+
+
+## Concurrency model
+
+
+Use structured concurrency rather than unmanaged background tasks.
+
+
+```text
+Turn task group
+ ├── client stream writer
+ ├── heartbeat / disconnect watcher
+ ├── orchestration task
+ │    ├── retrieval task group
+ │    ├── tool task group
+ │    └── sub-agent task group
+ └── telemetry flusher
+```
+
+
+When the turn is cancelled:
+
+
+1. Cancel model streams where supported.
+2. Cancel read-only tools immediately.
+3. Do not blindly cancel side-effecting operations.
+4. Query their completion status using the idempotency key.
+5. Record final state.
+6. Resume or compensate if required.
+
+
+## Recommended primitives
+
+
+- `asyncio.TaskGroup` or equivalent structured concurrency.
+- Bounded semaphores per tenant, model and tool server.
+- Per-operation timeout budgets.
+- Deadline propagation, not independently invented timeouts.
+- Backpressure-aware stream queues.
+- Cancellation tokens propagated through the entire graph.
+- Durable queue for operations lasting beyond an interactive request.
+
+
+## Backpressure
+
+
+The model may produce tokens faster than the client consumes them. Use:
+
+
+```text
+Model/provider stream
+        ↓
+bounded internal queue
+        ↓
+event coalescer
+        ↓
+transport writer
+```
+
+
+When the queue is near capacity:
+
+
+- combine adjacent text deltas;
+- reduce progress-event frequency;
+- pause reading where provider protocols permit;
+- never discard terminal, error or authorization events.
+
+
+## Time budgets
+
+
+Derive internal deadlines from one turn-level deadline:
+
+
+```text
+Total interactive budget: 30 seconds
+
+
+Routing and input policy:      0.5 s
+Context preparation:           1.5 s
+Planning:                      3.0 s
+Tool execution:               15.0 s
+Synthesis:                     6.0 s
+Verification and repair:       4.0 s
+```
+
+
+Do not spend the entire budget on planning and leave no time to answer.
+
+
+---
+
+
+# 6. Context engineering
+
+
+The model should never receive the raw contents of every memory, tool description and previous message.
+
+
+```mermaid
+flowchart TB
+    SYS[System Policy]
+    USER[Current User Message]
+    RECENT[Recent Turns]
+    SUMMARY[Conversation Summary]
+    MEM[Relevant Long-term Memories]
+    RET[RAG Evidence]
+    TOOLS[Selected Tool Definitions]
+    TASK[Current Task State]
+    PREF[User Preferences]
+    BUDGET[Token Budget]
+
+
+    SYS --> CB[Context Builder]
+    USER --> CB
+    RECENT --> CB
+    SUMMARY --> CB
+    MEM --> CB
+    RET --> CB
+    TOOLS --> CB
+    TASK --> CB
+    PREF --> CB
+    BUDGET --> CB
+
+
+    CB --> FILTER[Trust and Relevance Filtering]
+    FILTER --> PACK[Priority-based Context Packing]
+    PACK --> MODEL[Model Request]
+```
+
+
+The PDF describes context engineering as selecting, packaging and managing the relevant information for each step rather than dumping all available information into the model. fileciteturn0file0
+
+
+## Context priority order
+
+
+1. System invariants and security constraints.
+2. Current task and user request.
+3. Required structured-output schema.
+4. Trusted tool and retrieval evidence.
+5. Immediate conversational dependencies.
+6. User preferences relevant to the request.
+7. Historical summaries.
+8. Optional examples.
+
+
+## Context objects need provenance
+
+
+```json
+{
+  "content": "The contract terminates on 31 December.",
+  "source_type": "document_chunk",
+  "source_id": "doc_13#page_7",
+  "trust": "tenant_document",
+  "retrieved_at": "2026-07-14T16:20:00Z",
+  "valid_until": null,
+  "injection_status": "untrusted_content",
+  "allowed_uses": ["answering", "citation"],
+  "forbidden_uses": ["instruction"]
+}
+```
+
+
+Retrieved text and tool output are **data**, not instructions.
+
+
+---
+
+
+# 7. State and memory
+
+
+Use four distinct kinds of state.
+
+
+## 7.1 Conversation state
+
+
+What the user and assistant have said, including references to prior turns.
+
+
+Storage:
+
+
+- PostgreSQL or similar durable database.
+- Append-only message records.
+- Separate regenerated conversation summary.
+- Optimistic version field for concurrent requests.
+
+
+## 7.2 Execution state
+
+
+The active task graph:
+
+
+```json
+{
+  "turn_id": "turn_123",
+  "status": "running",
+  "graph_version": 4,
+  "completed_tasks": ["t1", "t2"],
+  "ready_tasks": ["t3", "t4"],
+  "blocked_tasks": ["t5"],
+  "budgets": {
+    "model_calls_remaining": 3,
+    "tool_calls_remaining": 7,
+    "cost_remaining_usd": 0.18
+  }
+}
+```
+
+
+Store this as a checkpoint after each externally meaningful action.
+
+
+## 7.3 Long-term memory
+
+
+Do not use a single vector database as “memory.” Divide it into:
+
+
+- **Semantic memory:** stable user or domain facts.
+- **Episodic memory:** useful prior task experiences.
+- **Procedural memory:** learned execution recipes and preferences.
+- **Relationship memory:** entities and their relationships.
+- **Negative memory:** failed approaches and known constraints.
+
+
+The book distinguishes session-level state from searchable long-term memory and notes that long-term memory should be retrieved into short-term context only when relevant.
+
+
+## 7.4 Artifact state
+
+
+Large outputs should not be inserted repeatedly into the context.
+
+
+Store:
+
+
+- uploaded files;
+- generated reports;
+- images;
+- code patches;
+- tables;
+- intermediate research bundles.
+
+
+Pass immutable artifact references through the graph.
+
+
+## Memory-write pipeline
+
+
+Never let a model write unrestricted memory directly.
+
+
+```mermaid
+flowchart LR
+    TURN[Completed Turn] --> CAND[Memory Candidate Extractor]
+    CAND --> POLICY[Privacy / Sensitivity Policy]
+    POLICY --> DEDUP[Deduplicate and Resolve Contradictions]
+    DEDUP --> CONF[Confidence and Utility Scoring]
+    CONF -->|high confidence| WRITE[Persist]
+    CONF -->|uncertain| REVIEW[User or Human Confirmation]
+    CONF -->|low utility| DROP[Discard]
+```
+
+
+---
+
+
+# 8. MCP and large tool ecosystems
+
+
+With many MCP servers, the greatest risk is not connectivity. It is tool selection, excessive schemas, inconsistent authentication and uncontrolled side effects.
+
+
+## MCP gateway
+
+
+```mermaid
+flowchart LR
+    EXEC[Agent Executor] --> GW[MCP Gateway]
+
+
+    GW --> DISC[Discovery and Schema Cache]
+    GW --> MATCH[Capability Matcher]
+    GW --> AUTH[Credential Broker]
+    GW --> POL[Tool Policy Enforcement]
+    GW --> CALL[Call Executor]
+    GW --> NORM[Result Normalizer]
+    GW --> OBS[Audit and Telemetry]
+
+
+    DISC --> REG[(Capability Registry)]
+    MATCH --> REG
+
+
+    CALL --> S1[MCP Server A]
+    CALL --> S2[MCP Server B]
+    CALL --> S3[MCP Server N]
+
+
+    AUTH --> VAULT[(Secret Vault)]
+```
+
+
+## Why a gateway is necessary
+
+
+Without a gateway:
+
+
+- every agent handles MCP protocol differences;
+- every agent sees too many tools;
+- credentials leak into prompts;
+- retries can duplicate writes;
+- observability becomes inconsistent;
+- policy enforcement is fragmented.
+
+
+## Capability registry
+
+
+Store tool metadata outside the model prompt:
+
+
+```json
+{
+  "tool_id": "crm.customer.update",
+  "server_id": "salesforce-prod",
+  "description": "Update approved CRM customer fields.",
+  "capabilities": ["crm", "customer_write"],
+  "input_schema_ref": "schema://crm-update/v3",
+  "output_schema_ref": "schema://crm-customer/v2",
+  "side_effect_class": "reversible_write",
+  "risk": "high",
+  "required_scopes": ["crm.customer.write"],
+  "supports_idempotency": true,
+  "supports_cancellation": false,
+  "p50_latency_ms": 350,
+  "p95_latency_ms": 1800,
+  "reliability_score": 0.997,
+  "data_classification": ["confidential"],
+  "tenant_allowlist": ["enterprise"]
+}
+```
+
+
+## Hierarchical tool selection
+
+
+Do not expose 500 tools to a model.
+
+
+```text
+User query
+   ↓
+Capability-family selection
+   ↓
+Server selection
+   ↓
+Top-k tool retrieval
+   ↓
+Schema-aware model choice
+   ↓
+Argument validation
+   ↓
+Policy decision
+   ↓
+Execution
+```
+
+
+Typically expose 5–15 tools per model call.
+
+
+## Tool invocation envelope
+
+
+```json
+{
+  "invocation_id": "inv_987",
+  "turn_id": "turn_123",
+  "task_id": "task_4",
+  "tool_id": "crm.customer.update",
+  "idempotency_key": "turn_123:task_4:v1",
+  "arguments": {},
+  "deadline": "2026-07-14T16:30:10Z",
+  "auth_context_ref": "authctx_55",
+  "purpose": "Apply user-approved phone-number correction",
+  "dry_run": false
+}
+```
+
+
+## Side-effect classes
+
+
+| Class | Example | Default policy |
+|---|---|---|
+| Pure | Calculator | Automatic |
+| Read-only | Search, database read | Automatic if authorised |
+| Reversible write | Create draft, update metadata | May require confirmation |
+| Irreversible write | Send payment, delete resource | Explicit approval |
+| External communication | Send email, publish post | Explicit approval |
+| Privileged | Change permissions | Strong approval and audit |
+
+
+---
+
+
+# 9. Sub-agent model
+
+
+A sub-agent is a scoped worker, not a new autonomous personality.
+
+
+## Spawn contract
+
+
+```json
+{
+  "agent_type": "research_worker",
+  "objective": "Find authoritative evidence for claims A and B.",
+  "inputs": {
+    "query": "...",
+    "source_constraints": ["internal_documents"]
+  },
+  "allowed_tools": [
+    "document.search",
+    "document.read"
+  ],
+  "forbidden_tools": ["email.send", "database.write"],
+  "max_steps": 6,
+  "max_tokens": 12000,
+  "max_wall_time_ms": 15000,
+  "output_schema": "ResearchBundle/v1",
+  "memory_access": "read_relevant_only",
+  "spawn_depth_remaining": 0
+}
+```
+
+
+## Rules
+
+
+- A child receives the minimum context required.
+- A child does not inherit all parent tools.
+- A child cannot expand its own budget.
+- Child spawning depth is bounded, usually one or two.
+- Child outputs must be structured.
+- Parent verifies and synthesises child results.
+- Child agents do not directly answer the user unless explicitly designated.
+- Side effects normally remain with the parent.
+
+
+The book’s multi-agent pattern includes sequential hand-offs, parallel specialists, hierarchical manager-worker structures, debates and critic-reviewer arrangements. fileciteturn2file3
+
+
+## When to spawn
+
+
+Spawn sub-agents when:
+
+
+- tasks are materially independent;
+- different tools or permissions are required;
+- different context windows are beneficial;
+- parallel work offsets orchestration overhead;
+- independent verification is valuable.
+
+
+Do not spawn merely because a request contains multiple sentences.
+
+
+---
+
+
+# 10. Verification architecture
+
+
+Verification is not one “judge LLM” called at the end. Use layered verification.
+
+
+```mermaid
+flowchart TB
+    OUT[Candidate Output]
+
+
+    OUT --> S[Schema Validation]
+    S --> C[Completeness Checks]
+    C --> E[Evidence and Citation Validation]
+    E --> T[Tool-result Consistency]
+    T --> R[Rule and Policy Checks]
+    R --> M[Model-based Critique]
+    M --> DEC{Decision}
+
+
+    DEC -->|Pass| RELEASE[Release]
+    DEC -->|Repairable| REPAIR[Targeted Repair]
+    REPAIR --> S
+    DEC -->|Insufficient evidence| ABSTAIN[Qualified Answer / Abstain]
+    DEC -->|High risk| HUMAN[Human Review]
+```
+
+
+## Verification levels
+
+
+### V0 — Format only
+
+
+- JSON parses.
+- Schema is valid.
+- Required fields are present.
+
+
+### V1 — Deterministic consistency
+
+
+- Totals add up.
+- Dates are coherent.
+- IDs exist.
+- Tool results match the final answer.
+- Citations point to retrieved passages.
+
+
+### V2 — Evidence coverage
+
+
+For every externally verifiable claim:
+
+
+```json
+{
+  "claim": "Revenue increased by 12%.",
+  "evidence_refs": ["doc_7#p4:lines_10_13"],
+  "entailment": "supported",
+  "confidence": 0.94
+}
+```
+
+
+### V3 — Independent model critique
+
+
+Use a separate prompt or model to check:
+
+
+- unsupported claims;
+- instruction adherence;
+- omissions;
+- contradictions;
+- unsafe recommendations;
+- incorrect interpretation.
+
+
+### V4 — Tool replay
+
+
+For high-impact calculations or actions:
+
+
+- rerun calculator or query;
+- compare result hashes;
+- validate preconditions;
+- perform a dry-run.
+
+
+### V5 — Human approval
+
+
+Required for:
+
+
+- irreversible actions;
+- financially material changes;
+- privileged permission changes;
+- ambiguous high-risk instructions;
+- low-confidence action plans.
+
+
+## Repair policy
+
+
+Do not regenerate everything after one failed check. Perform targeted repair:
+
+
+```json
+{
+  "failed_checks": [
+    {
+      "path": "$.recommendations[2].supporting_evidence",
+      "type": "missing_citation"
+    }
+  ],
+  "repair_scope": [
+    "$.recommendations[2]"
+  ]
+}
+```
+
+
+---
+
+
+# 11. Hooks and middleware
+
+
+Hooks should be first-class typed middleware, not arbitrary callbacks scattered throughout the codebase.
+
+
+## Hook points
+
+
+```text
+on_request_received
+before_input_guardrails
+after_input_guardrails
+before_routing
+after_routing
+before_context_build
+after_context_build
+before_plan
+after_plan
+before_task
+after_task
+before_model_call
+after_model_call
+before_tool_call
+after_tool_call
+on_tool_error
+before_subagent_spawn
+after_subagent_complete
+before_verification
+after_verification
+before_response_stream
+after_response_complete
+on_turn_error
+on_turn_cancel
+```
+
+
+## Hook action
+
+
+```python
+class HookDecision:
+    action: Literal[
+        "continue",
+        "modify",
+        "short_circuit",
+        "deny",
+        "require_approval",
+        "retry",
+        "fallback"
+    ]
+    patch: dict | None
+    reason_code: str | None
+```
+
+
+## Hook constraints
+
+
+Hooks must declare:
+
+
+- whether they may mutate state;
+- maximum latency;
+- whether they fail open or closed;
+- execution order;
+- tenant applicability;
+- data access;
+- audit category.
+
+
+A telemetry hook should usually fail open. A payment-policy hook must fail closed.
+
+
+## Example hook chain
+
+
+```mermaid
+flowchart LR
+    INPUT[Input] --> H1[Trace Hook]
+    H1 --> H2[Tenant Policy Hook]
+    H2 --> H3[PII Hook]
+    H3 --> H4[Prompt Injection Hook]
+    H4 --> H5[Rate and Budget Hook]
+    H5 --> CORE[Core Operation]
+    CORE --> H6[Schema Hook]
+    H6 --> H7[Evidence Hook]
+    H7 --> H8[Output Safety Hook]
+    H8 --> OUTPUT[Output]
+```
+
+
+---
+
+
+# 12. Guardrails
+
+
+Guardrails should operate at five boundaries.
+
+
+## 12.1 Input boundary
+
+
+- size and encoding limits;
+- malware scanning for attachments;
+- content safety classification;
+- prompt-injection detection;
+- PII and secret detection;
+- tenant data-boundary validation;
+- intent-risk classification.
+
+
+## 12.2 Context boundary
+
+
+- treat retrieved content as untrusted;
+- remove instructions embedded in documents;
+- label provenance and trust;
+- prevent cross-tenant retrieval;
+- redact secrets before model calls;
+- apply least-context principles.
+
+
+## 12.3 Planning boundary
+
+
+- prohibit disallowed goals;
+- enforce maximum execution depth;
+- constrain tools;
+- enforce budget;
+- reject cyclic or impossible graphs;
+- insert approval nodes.
+
+
+## 12.4 Tool boundary
+
+
+- schema validation;
+- authorization;
+- argument sanitisation;
+- domain allowlists;
+- rate limiting;
+- idempotency;
+- side-effect classification;
+- sandboxing;
+- output-size limits.
+
+
+## 12.5 Output boundary
+
+
+- response-policy checks;
+- data-loss prevention;
+- citation validation;
+- sensitive-field redaction;
+- harmful-content checks;
+- structured-output validation.
+
+
+The PDF recommends layered guardrails across input validation, output filtering, behavioural constraints, tool restrictions, moderation and human oversight rather than relying on one safeguard.
+
+
+---
+
+
+# 13. Structured output
+
+
+Internally, no component should depend on parsing prose from another component.
+
+
+Use:
+
+
+- JSON Schema for network contracts.
+- Pydantic, Protobuf or equivalent typed models internally.
+- Versioned schemas.
+- Discriminated unions for event types.
+- Explicit `unknown` and `not_applicable` states.
+- Validation before persistence or downstream execution.
+
+
+## Final response envelope
+
+
+```json
+{
+  "turn_id": "turn_123",
+  "status": "completed",
+  "answer": {
+    "format": "markdown",
+    "content": "..."
+  },
+  "citations": [
+    {
+      "citation_id": "cite_1",
+      "source_ref": "artifact_4#page_18",
+      "supports": ["claim_3"]
+    }
+  ],
+  "artifacts": [],
+  "actions": [],
+  "verification": {
+    "status": "passed",
+    "profile": "evidence_required",
+    "confidence": 0.93,
+    "warnings": []
+  },
+  "usage": {
+    "model_calls": 3,
+    "tool_calls": 4,
+    "wall_time_ms": 8230
+  }
+}
+```
+
+
+## Handling invalid structured output
+
+
+1. Use provider-native constrained decoding where available.
+2. Validate.
+3. Apply deterministic repair for trivial syntax.
+4. Ask the same model for schema-only repair.
+5. Use fallback model if necessary.
+6. Stop after a bounded number of attempts.
+7. Return a typed failure, never silently continue with malformed data.
+
+
+---
+
+
+# 14. Reliability and recovery
+
+
+Failures should be classified before retrying.
+
+
+| Failure | Retry? | Action |
+|---|---:|---|
+| Network reset | Yes | Exponential backoff with jitter |
+| Provider 429 | Yes | Respect retry-after, fallback model |
+| Invalid tool arguments | Usually no | Repair arguments |
+| Tool 4xx permission error | No | Re-authorise or deny |
+| Tool 5xx | Yes | Retry, fallback server |
+| Schema violation | Limited | Structured repair |
+| Unsupported evidence | No blind retry | Retrieve more or abstain |
+| Policy violation | No | Block or escalate |
+| Deadline exceeded | No | Graceful degradation |
+| Duplicate side effect | No | Resolve using idempotency record |
+
+
+The book’s recovery pattern calls for detection, logging, retries, fallbacks, graceful degradation, rollback, replanning and escalation.
+
+
+## Circuit breakers
+
+
+Maintain separate breakers for:
+
+
+- provider and model;
+- MCP server;
+- individual tool;
+- tenant;
+- region.
+
+
+## Bulkheads
+
+
+Separate concurrency pools for:
+
+
+- interactive chat;
+- background tasks;
+- long-running research;
+- write tools;
+- verification;
+- memory extraction.
+
+
+A slow research workflow must not consume every worker and block simple chat requests.
+
+
+## Checkpointing
+
+
+Checkpoint after:
+
+
+- plan accepted;
+- external tool result;
+- side effect;
+- user approval;
+- artifact creation;
+- graph modification.
+
+
+On restart, the executor reconstructs the ready queue from the event log and latest checkpoint.
+
+
+## Side-effect correctness
+
+
+Use:
+
+
+- idempotency keys;
+- outbox pattern;
+- status reconciliation;
+- compensating actions;
+- precondition checks;
+- dry-run support;
+- user confirmation.
+
+
+Exactly-once execution is generally unrealistic across distributed services. Build **at-least-once delivery plus idempotent effects**.
+
+
+---
+
+
+# 15. Event-sourced execution
+
+
+The canonical record should be an immutable event stream.
+
+
+```json
+{
+  "event_id": "evt_52",
+  "turn_id": "turn_123",
+  "sequence": 52,
+  "event_type": "tool.completed",
+  "timestamp": "2026-07-14T16:30:02.123Z",
+  "actor": {
+    "type": "tool",
+    "id": "document.search"
+  },
+  "causation_id": "evt_49",
+  "correlation_id": "task_8",
+  "payload_ref": "blob://results/result_88",
+  "payload_hash": "sha256:...",
+  "schema_version": 2
+}
+```
+
+
+Benefits:
+
+
+- replay;
+- audit;
+- debugging;
+- resumability;
+- offline evaluation;
+- user-visible timelines;
+- incident reconstruction.
+
+
+Current state becomes a materialised projection of events.
+
+
+---
+
+
+# 16. Model gateway
+
+
+All model calls should pass through one gateway.
+
+
+Responsibilities:
+
+
+- provider abstraction;
+- model routing;
+- rate limits;
+- token counting;
+- prompt-template resolution;
+- caching;
+- streaming normalisation;
+- retries;
+- fallback;
+- data residency;
+- safety configuration;
+- cost tracking;
+- trace correlation.
+
+
+## Model profiles
+
+
+Use profiles rather than hard-coded model names:
+
+
+```yaml
+profiles:
+  fast:
+    objective: low_latency
+    max_output_tokens: 1200
+    fallback: balanced
+
+
+  balanced:
+    objective: quality_cost_balance
+    max_output_tokens: 4000
+    fallback: reasoning
+
+
+  reasoning:
+    objective: complex_reasoning
+    max_output_tokens: 12000
+
+
+  verifier:
+    objective: independent_critique
+    temperature: 0
+```
+
+
+This allows provider or model changes without modifying orchestration logic.
+
+
+---
+
+
+# 17. Data stores
+
+
+A practical starting stack:
+
+
+| Need | Store |
+|---|---|
+| Sessions, turns, graph metadata | PostgreSQL |
+| Append-only event records | PostgreSQL initially; Kafka at scale |
+| Hot ephemeral state | Redis |
+| Long-running task queue | Temporal, durable workflow engine or managed queue |
+| Artifacts and large payloads | Object storage |
+| Semantic retrieval | PostgreSQL with pgvector initially |
+| Search and logs | OpenSearch or managed equivalent |
+| Secrets | Cloud secret manager |
+| Telemetry | OpenTelemetry backend |
+
+
+Avoid adding Kafka, a graph database and multiple vector databases on day one. PostgreSQL, Redis, object storage and a durable workflow mechanism can support a substantial initial deployment.
+
+
+---
+
+
+# 18. Observability
+
+
+Every turn should be traceable through:
+
+
+```text
+request
+ └── input_policy
+ └── route
+ └── context_build
+     ├── memory_retrieval
+     └── document_retrieval
+ └── planning
+ └── graph_execution
+     ├── model_call
+     ├── tool_call
+     ├── subagent
+     └── checkpoint
+ └── synthesis
+ └── verification
+ └── output_policy
+```
+
+
+## Metrics
+
+
+### User experience
+
+
+- time to first event;
+- time to first useful token;
+- total response latency;
+- interruption and cancellation rate;
+- clarification frequency;
+- task success rate.
+
+
+### Orchestration
+
+
+- steps per turn;
+- planner invocation rate;
+- replan rate;
+- sub-agent spawn rate;
+- parallelism achieved;
+- graph completion rate;
+- recovery rate.
+
+
+### Tools
+
+
+- selection precision;
+- argument validation failures;
+- p50/p95 latency;
+- error rate;
+- duplicate-write prevention;
+- stale result rate.
+
+
+### Quality
+
+
+- schema pass rate;
+- citation coverage;
+- groundedness;
+- verifier disagreement;
+- human escalation rate;
+- user correction rate.
+
+
+### Economics
+
+
+- tokens per successful turn;
+- tool cost;
+- verifier cost;
+- cost by route;
+- cache hit rate;
+- wasted work after cancellation.
+
+
+### Safety
+
+
+- prompt-injection detections;
+- policy-denied calls;
+- cross-tenant access attempts;
+- secret leakage detections;
+- unapproved side-effect attempts.
+
+
+The book emphasises continuous measurement of accuracy, latency, resource use and compliance rather than evaluation only before deployment. fileciteturn2file2
+
+
+---
+
+
+# 19. Evaluation system
+
+
+Build evaluation and replay into the harness from the start.
+
+
+## Dataset categories
+
+
+- direct-answer queries;
+- single-tool requests;
+- ambiguous tool selection;
+- dependent multi-step workflows;
+- parallel research tasks;
+- multi-turn corrections;
+- memory retrieval;
+- prompt injection;
+- tool failure;
+- stale evidence;
+- conflicting sources;
+- cancellation;
+- approval flows;
+- malformed tool output;
+- long-running resume.
+
+
+## Evaluate components separately
+
+
+```text
+Router:
+  Did it choose the right execution profile?
+
+
+Planner:
+  Is the graph valid, minimal and complete?
+
+
+Tool selector:
+  Did it choose the correct capability?
+
+
+Argument generator:
+  Are arguments correct and safe?
+
+
+Retriever:
+  Did it return sufficient evidence?
+
+
+Synthesiser:
+  Does the response answer the question?
+
+
+Verifier:
+  Did it catch seeded defects?
+
+
+System:
+  Did it finish within latency and cost budgets?
+```
+
+
+## Replay modes
+
+
+- **Exact replay:** reuse recorded model and tool outputs.
+- **Tool replay:** rerun models, freeze tools.
+- **Model replay:** freeze model outputs, rerun deterministic components.
+- **Full shadow replay:** rerun everything without side effects.
+- **Counterfactual replay:** compare router, prompt, model or policy versions.
+
+
+---
+
+
+# 20. Security and tenancy
+
+
+Use a zero-trust model between orchestration and tools.
+
+
+Every action carries:
+
+
+```json
+{
+  "user_id": "...",
+  "tenant_id": "...",
+  "session_id": "...",
+  "delegated_scopes": ["document.read"],
+  "purpose": "answer_user_query",
+  "data_classification_ceiling": "confidential",
+  "expires_at": "...",
+  "trace_id": "..."
+}
+```
+
+
+Rules:
+
+
+- Never place raw credentials in prompts.
+- Use short-lived delegated tokens.
+- Enforce tenant boundaries in the data layer, not only prompts.
+- Maintain per-tool scopes.
+- Encrypt sensitive event payloads.
+- Store hashes and references rather than large secrets in logs.
+- Audit all reads and writes for sensitive systems.
+- Require re-authentication for privileged actions.
+- Treat sub-agents as less trusted than the coordinator.
+
+
+---
+
+
+# 21. Suggested service decomposition
+
+
+Do not begin with twenty microservices. Start with a modular monolith plus separately scalable gateways.
+
+
+```mermaid
+flowchart TB
+    subgraph APP["Agent Application"]
+        API[Chat API]
+        TURN[Turn Runtime]
+        ORCH[Orchestrator]
+        HOOK[Hook Engine]
+        POLICY[Policy Engine]
+        CTX[Context Engine]
+        VERIFY[Verifier]
+    end
+
+
+    MGW[Model Gateway]
+    TGW[Tool / MCP Gateway]
+    WORKER[Durable Worker]
+    DB[(PostgreSQL)]
+    REDIS[(Redis)]
+    OBJ[(Object Store)]
+    OTEL[Telemetry]
+
+
+    API --> TURN
+    TURN --> ORCH
+    ORCH --> HOOK
+    ORCH --> POLICY
+    ORCH --> CTX
+    ORCH --> VERIFY
+
+
+    ORCH --> MGW
+    ORCH --> TGW
+    ORCH --> WORKER
+
+
+    APP --> DB
+    APP --> REDIS
+    WORKER --> DB
+    WORKER --> OBJ
+
+
+    APP --> OTEL
+    MGW --> OTEL
+    TGW --> OTEL
+    WORKER --> OTEL
+```
+
+
+Split services only when independent scaling, security or ownership requires it.
+
+
+Likely early separations:
+
+
+1. Model gateway.
+2. MCP/tool gateway.
+3. Durable background worker.
+4. Core chat and orchestration service.
+
+
+---
+
+
+# 22. Suggested codebase structure
+
+
+```text
+agent_harness/
+├── api/
+│   ├── chat.py
+│   ├── streams.py
+│   └── approvals.py
+├── runtime/
+│   ├── turn_coordinator.py
+│   ├── graph_executor.py
+│   ├── scheduler.py
+│   ├── cancellation.py
+│   └── budgets.py
+├── routing/
+│   ├── classifier.py
+│   ├── capability_router.py
+│   └── profiles.py
+├── planning/
+│   ├── planner.py
+│   ├── graph_models.py
+│   ├── compiler.py
+│   └── validator.py
+├── context/
+│   ├── builder.py
+│   ├── packer.py
+│   ├── provenance.py
+│   └── summarizer.py
+├── models/
+│   ├── gateway.py
+│   ├── providers/
+│   ├── structured_generation.py
+│   └── fallback.py
+├── tools/
+│   ├── gateway.py
+│   ├── registry.py
+│   ├── mcp_client.py
+│   ├── authorization.py
+│   ├── idempotency.py
+│   └── normalization.py
+├── agents/
+│   ├── runtime.py
+│   ├── registry.py
+│   └── spawn_policy.py
+├── verification/
+│   ├── schema.py
+│   ├── evidence.py
+│   ├── consistency.py
+│   ├── critic.py
+│   └── repair.py
+├── guardrails/
+│   ├── input.py
+│   ├── context.py
+│   ├── plan.py
+│   ├── tool.py
+│   └── output.py
+├── hooks/
+│   ├── registry.py
+│   ├── middleware.py
+│   └── builtins/
+├── memory/
+│   ├── session.py
+│   ├── long_term.py
+│   ├── extraction.py
+│   └── policy.py
+├── persistence/
+│   ├── events.py
+│   ├── checkpoints.py
+│   └── artifacts.py
+├── telemetry/
+│   ├── tracing.py
+│   ├── metrics.py
+│   └── audit.py
+└── evaluation/
+    ├── datasets.py
+    ├── replay.py
+    ├── graders.py
+    └── reports.py
+```
+
+
+---
+
+
+# 23. End-to-end example
+
+
+User asks:
+
+
+> “Compare the termination clauses in these four contracts, identify inconsistencies with our policy, and draft an email to legal.”
+
+
+The harness should execute:
+
+
+```mermaid
+flowchart TB
+    Q[User Request] --> CLASS[Classify: Complex, Medium Risk]
+    CLASS --> AUTH[Confirm document and email permissions]
+    AUTH --> PLAN[Create Task Graph]
+
+
+    PLAN --> D1[Read Contract 1]
+    PLAN --> D2[Read Contract 2]
+    PLAN --> D3[Read Contract 3]
+    PLAN --> D4[Read Contract 4]
+    PLAN --> P[Retrieve Internal Policy]
+
+
+    D1 --> X1[Extract Clauses]
+    D2 --> X2[Extract Clauses]
+    D3 --> X3[Extract Clauses]
+    D4 --> X4[Extract Clauses]
+
+
+    X1 --> COMPARE[Compare Structured Clauses]
+    X2 --> COMPARE
+    X3 --> COMPARE
+    X4 --> COMPARE
+    P --> COMPARE
+
+
+    COMPARE --> VERIFY[Evidence and Citation Verification]
+    VERIFY --> REPORT[Compose Comparison]
+    REPORT --> EMAIL[Create Email Draft]
+    EMAIL --> OUTPUT[Stream Answer + Draft Artifact]
+```
+
+
+Important characteristics:
+
+
+- contracts are processed concurrently;
+- each extractor produces the same schema;
+- comparison is deterministic where possible;
+- every inconsistency references contract and policy evidence;
+- the system creates an email draft, but does not send it;
+- the user sees progress while the analysis is running;
+- a verifier checks evidence before release.
+
+
+---
+
+
+# 24. Delivery roadmap
+
+
+## Phase 1 — Reliable single-agent runtime
+
+
+Implement:
+
+
+- stream events;
+- turn and session state;
+- direct and single-tool routes;
+- model gateway;
+- MCP gateway;
+- structured output;
+- input/output guardrails;
+- tracing and budgets;
+- schema and evidence verification.
+
+
+## Phase 2 — Graph execution
+
+
+Add:
+
+
+- task graph compiler;
+- parallel scheduler;
+- retries and circuit breakers;
+- checkpoints;
+- artifact references;
+- cancellation and resume;
+- deterministic replay.
+
+
+## Phase 3 — Multi-agent workers
+
+
+Add:
+
+
+- scoped sub-agent contracts;
+- specialist registry;
+- parallel worker execution;
+- critic-reviewer workflows;
+- child budgets and permissions;
+- hierarchy-depth limits.
+
+
+## Phase 4 — Adaptive optimisation
+
+
+Add:
+
+
+- learned router;
+- semantic and result caches;
+- prompt and model experiments;
+- offline evaluation;
+- automatic route tuning;
+- memory candidate extraction;
+- cost-quality optimisation.
+
+
+## Phase 5 — High-risk autonomy
+
+
+Only after the previous layers are mature:
+
+
+- reversible write workflows;
+- approvals;
+- compensation;
+- long-running autonomous tasks;
+- continuous policy evaluation;
+- privileged tool access.
+
+
+---
+
+
+# 25. Non-negotiable design rules
+
+
+1. **One orchestrator owns the turn.** Do not let agents independently mutate global state.
+2. **Every operation is typed.** Prose is for users, not service-to-service contracts.
+3. **Every side effect is idempotent or reconciled.**
+4. **Every task has a deadline and budget.**
+5. **Every tool is selected through capability and policy filters.**
+6. **Every sub-agent receives reduced scope.**
+7. **Every externally verifiable claim can carry evidence.**
+8. **Every failure becomes an event.**
+9. **Every long-running workflow is resumable.**
+10. **Every streamed answer remains provisional until verification completes.**
+11. **Retrieved content is never automatically trusted as instruction.**
+12. **Simple queries remain simple.** Multi-agent orchestration is an escalation path, not the default.
+
+
+The result is not a collection of agents talking freely. It is a **durable, event-driven, policy-controlled execution platform** in which models, tools and sub-agents are interchangeable workers operating within explicit contracts.
