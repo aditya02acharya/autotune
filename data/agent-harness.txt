@@ -1,0 +1,559 @@
+agent-harness/
+├── pyproject.toml
+├── uv.lock
+├── Makefile
+├── README.md
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       ├── evals.yml
+│       └── release.yml
+│
+├── packages/                          # shared Python libraries (no I/O side effects)
+│   ├── harness_core/
+│   │   └── src/harness_core/
+│   │       ├── ids.py                 # ULID + type prefixes
+│   │       ├── envelope.py            # correlation envelope
+│   │       ├── action_class.py        # read / write / dangerous
+│   │       ├── errors.py
+│   │       └── clock.py
+│   ├── harness_schemas/
+│   │   └── src/harness_schemas/
+│   │       ├── tool_descriptor.py
+│   │       ├── task.py
+│   │       ├── agent_card.py
+│   │       ├── artifact.py
+│   │       ├── events/                # AG-UI compatible event models
+│   │       │   ├── lifecycle.py
+│   │       │   ├── message.py
+│   │       │   ├── tool.py
+│   │       │   ├── state.py
+│   │       │   ├── approval.py
+│   │       │   └── custom.py
+│   │       ├── memory_record.py
+│   │       ├── context_payload.py
+│   │       ├── preference.py
+│   │       ├── plugin_manifest.py
+│   │       ├── plugin_permission.py
+│   │       ├── document.py
+│   │       ├── workspace.py
+│   │       └── cost.py
+│   ├── harness_telemetry/
+│   │   └── src/harness_telemetry/
+│   │       ├── tracing.py             # OTel setup, gen_ai.* attrs
+│   │       ├── spans.py
+│   │       ├── logging.py             # structured + redaction
+│   │       ├── redaction.py
+│   │       └── metrics.py
+│   └── harness_testing/
+│       └── src/harness_testing/
+│           ├── fakes/                 # fake model adapter, fake MCP server
+│           ├── fixtures.py
+│           └── replay.py
+│
+├── services/
+│   ├── edge_api/                      # FastAPI: authn, tenant, runs, control channel
+│   │   └── src/edge_api/
+│   │       ├── app.py
+│   │       ├── routes/
+│   │       │   ├── sessions.py
+│   │       │   ├── runs.py
+│   │       │   ├── control.py
+│   │       │   ├── uploads.py
+│   │       │   └── workspaces.py
+│   │       └── auth.py
+│   ├── stream_broker/                 # SSE / WebSocket, replay, throttling
+│   │   └── src/stream_broker/
+│   │       ├── sse.py
+│   │       ├── websocket.py
+│   │       ├── replay.py
+│   │       ├── throttle.py
+│   │       └── visibility_filter.py
+│   ├── run_executor/                  # Temporal workers
+│   │   └── src/run_executor/
+│   │       ├── workflows/
+│   │       │   ├── run_workflow.py
+│   │       │   ├── task_workflow.py
+│   │       │   └── compensation.py
+│   │       ├── activities/
+│   │       │   ├── model_call.py
+│   │       │   ├── tool_call.py
+│   │       │   ├── delegate.py
+│   │       │   ├── memory_ops.py
+│   │       │   ├── checkpoint.py
+│   │       │   └── emit_event.py
+│   │       ├── agent_loop/            # Pydantic AI adapter
+│   │       │   ├── loop.py
+│   │       │   └── validators.py
+│   │       └── worker.py
+│   ├── context_assembler/
+│   │   └── src/context_assembler/
+│   │       ├── pipeline.py
+│   │       ├── budget.py
+│   │       ├── ranking.py
+│   │       ├── compression.py
+│   │       ├── task_brief.py
+│   │       ├── quality.py
+│   │       └── manifest.py
+│   ├── model_router/
+│   │   └── src/model_router/
+│   │       ├── policy.py              # tier routing table
+│   │       ├── adapters/
+│   │       │   ├── base.py            # ModelAdapter interface
+│   │       │   ├── gateway.py         # Envoy AI Gateway / LiteLLM
+│   │       │   └── local.py
+│   │       ├── prompt_cache.py
+│   │       └── token_count.py
+│   ├── capability_gateway/
+│   │   └── src/capability_gateway/
+│   │       ├── registry.py
+│   │       ├── invoke.py
+│   │       ├── validation.py
+│   │       ├── idempotency.py
+│   │       ├── resilience/
+│   │       │   ├── retry.py
+│   │       │   ├── circuit_breaker.py
+│   │       │   └── rate_limit.py
+│   │       ├── result_shaper.py
+│   │       ├── provenance.py
+│   │       ├── health.py
+│   │       ├── cache.py
+│   │       └── mcp/
+│   │           ├── client.py
+│   │           └── drift.py
+│   ├── delegation_broker/
+│   │   └── src/delegation_broker/
+│   │       ├── broker.py
+│   │       ├── graph.py               # allowed / forbidden delegation
+│   │       ├── agent_cards.py
+│   │       ├── join_policies.py
+│   │       └── a2a/
+│   │           ├── client.py
+│   │           └── server.py
+│   ├── policy_gateway/
+│   │   ├── src/policy_gateway/
+│   │   │   ├── decide.py
+│   │   │   ├── obligations.py
+│   │   │   ├── approvals.py
+│   │   │   └── engine/
+│   │   │       └── cedar.py
+│   │   └── policies/                  # Cedar policy sets + tests
+│   │       ├── tenant/
+│   │       ├── data_categories/
+│   │       ├── approvals/
+│   │       └── tests/
+│   ├── token_service/
+│   │   └── src/token_service/
+│   │       ├── mint.py
+│   │       ├── exchange.py            # RFC 8693
+│   │       ├── delegation_chain.py
+│   │       └── revocation.py
+│   ├── memory_service/
+│   │   └── src/memory_service/
+│   │       ├── api.py
+│   │       ├── tiers/
+│   │       │   ├── working.py
+│   │       │   ├── episodic.py
+│   │       │   ├── semantic.py
+│   │       │   └── procedural.py
+│   │       ├── retrieval/
+│   │       │   ├── hybrid.py
+│   │       │   ├── fusion.py
+│   │       │   ├── graph.py
+│   │       │   └── rescoring.py
+│   │       ├── write_policy.py
+│   │       ├── read_policy.py
+│   │       ├── lifecycle.py
+│   │       ├── forget.py
+│   │       └── ingestion.py
+│   ├── document_service/
+│   │   └── src/document_service/
+│   │       ├── upload.py
+│   │       ├── scan.py                # malware + DLP
+│   │       ├── parse.py               # Docling
+│   │       ├── chunk.py
+│   │       ├── index.py
+│   │       ├── summarise.py
+│   │       └── resources.py           # doc:// MCP resources + tools
+│   ├── workspace_service/
+│   │   └── src/workspace_service/
+│   │       ├── workspaces.py
+│   │       ├── membership.py
+│   │       ├── sharing.py
+│   │       ├── presence.py
+│   │       ├── comments.py
+│   │       └── crdt/
+│   │           ├── sync_server.py     # Yjs (y-py / yrs)
+│   │           └── agent_ops.py
+│   ├── state_service/
+│   │   └── src/state_service/
+│   │       ├── event_log.py
+│   │       ├── projections/
+│   │       │   ├── run_status.py
+│   │       │   ├── task_tree.py
+│   │       │   ├── transcript.py
+│   │       │   ├── cost_ledger.py
+│   │       │   └── audit_bundle.py
+│   │       ├── checkpoints.py
+│   │       ├── shared_state.py        # snapshot + JSON Patch
+│   │       └── consent_ledger.py
+│   ├── preference_service/
+│   │   └── src/preference_service/
+│   │       ├── store.py
+│   │       ├── resolve.py
+│   │       ├── injection.py
+│   │       ├── inference.py
+│   │       └── history.py
+│   ├── plugin_service/
+│   │   └── src/plugin_service/
+│   │       ├── registry.py
+│   │       ├── install.py
+│   │       ├── enablement.py
+│   │       ├── signing.py
+│   │       ├── credentials.py
+│   │       ├── risk_score.py
+│   │       ├── review.py
+│   │       └── uninstall.py
+│   ├── sandbox_runner/
+│   │   └── src/sandbox_runner/
+│   │       ├── provision.py
+│   │       ├── tiers/
+│   │       │   ├── firecracker.py
+│   │       │   ├── gvisor.py
+│   │       │   └── wasm.py
+│   │       ├── egress.py
+│   │       ├── limits.py
+│   │       └── pool.py
+│   ├── budget_service/
+│   │   └── src/budget_service/
+│   │       ├── ledgers.py
+│   │       ├── reserve.py
+│   │       ├── enforce.py
+│   │       ├── attribution.py
+│   │       ├── forecast.py
+│   │       └── anomalies.py
+│   └── control_plane/
+│       └── src/control_plane/
+│           ├── agent_registry.py
+│           ├── deployments.py         # canary, rollback
+│           ├── config.py
+│           ├── scheduler.py
+│           ├── query_api.py
+│           └── operator.py
+│
+├── agents/                            # agent definitions, versioned
+│   ├── analytics_chat_agent/
+│   │   ├── agent.yaml
+│   │   ├── card.json
+│   │   ├── prompts/
+│   │   │   └── system.md
+│   │   └── evals/
+│   ├── sql_data_agent/
+│   ├── statistics_agent/
+│   └── visualization_agent/
+│
+├── plugins/                           # first-party plugins
+│   ├── warehouse_mcp/
+│   │   ├── manifest.json
+│   │   └── src/
+│   ├── bi_leadership_deck/
+│   ├── python_sandbox/
+│   └── email_connector/
+│
+├── skills/                            # procedural memory packages
+│   └── executive_summary/
+│       └── SKILL.md
+│
+web/
+├── package.json
+├── pnpm-lock.yaml
+├── tsconfig.json
+├── vite.config.ts
+├── index.html
+├── .env.example
+├── public/
+│   └── favicon.svg
+│
+├── src/
+│   ├── main.tsx
+│   ├── app/
+│   │   ├── App.tsx
+│   │   ├── router.tsx
+│   │   ├── providers.tsx              # query client, auth, theme, store
+│   │   └── layout/
+│   │       ├── AppShell.tsx
+│   │       ├── Sidebar.tsx
+│   │       └── TopBar.tsx
+│   │
+│   ├── protocol/                      # wire layer: no React
+│   │   ├── agui/
+│   │   │   ├── client.ts              # AG-UI client wrapper
+│   │   │   ├── events.ts              # generated event types
+│   │   │   └── guards.ts
+│   │   ├── transport/
+│   │   │   ├── sse.ts
+│   │   │   ├── websocket.ts
+│   │   │   ├── reconnect.ts           # backoff, Last-Event-ID resume
+│   │   │   └── heartbeat.ts
+│   │   ├── control/
+│   │   │   ├── cancel.ts
+│   │   │   ├── retry.ts
+│   │   │   ├── approve.ts
+│   │   │   ├── provideInput.ts
+│   │   │   └── customAction.ts
+│   │   └── sequencing.ts              # seq dedupe, gap detection
+│   │
+│   ├── state/                         # canonical client store
+│   │   ├── store.ts                   # Zustand root
+│   │   ├── partitions/
+│   │   │   ├── ui.ts
+│   │   │   ├── shared.ts
+│   │   │   ├── conversation.ts
+│   │   │   └── domainRefs.ts
+│   │   ├── reducers/
+│   │   │   ├── runReducer.ts          # events -> state, idempotent
+│   │   │   ├── messageReducer.ts
+│   │   │   ├── toolCallReducer.ts
+│   │   │   ├── subagentReducer.ts
+│   │   │   └── approvalReducer.ts
+│   │   ├── sync/
+│   │   │   ├── applyPatch.ts          # JSON Patch, versioned
+│   │   │   ├── snapshot.ts
+│   │   │   ├── rebase.ts
+│   │   │   └── optimistic.ts
+│   │   ├── persistence/
+│   │   │   ├── localStore.ts          # ui partition, try/catch wrapped
+│   │   │   └── serverBackup.ts
+│   │   ├── uiContext.ts               # allowlist sent to agent
+│   │   └── selectors.ts
+│   │
+│   ├── api/                           # REST reads (TanStack Query)
+│   │   ├── httpClient.ts
+│   │   ├── sessions.ts
+│   │   ├── runs.ts
+│   │   ├── artifacts.ts
+│   │   ├── documents.ts
+│   │   ├── workspaces.ts
+│   │   ├── preferences.ts
+│   │   ├── plugins.ts
+│   │   ├── memory.ts
+│   │   └── usage.ts
+│   │
+│   ├── collab/                        # workspace collaboration
+│   │   ├── yjs/
+│   │   │   ├── provider.ts            # Hocuspocus / y-sweet
+│   │   │   ├── docRegistry.ts
+│   │   │   └── authorship.ts
+│   │   ├── presence/
+│   │   │   ├── presenceChannel.ts
+│   │   │   └── usePresence.ts
+│   │   └── comments/
+│   │       ├── commentStore.ts
+│   │       └── anchors.ts
+│   │
+│   ├── features/
+│   │   ├── chat/
+│   │   │   ├── ChatView.tsx
+│   │   │   ├── MessageList.tsx
+│   │   │   ├── Message.tsx
+│   │   │   ├── StreamingText.tsx
+│   │   │   ├── Composer.tsx
+│   │   │   ├── AttachmentPicker.tsx
+│   │   │   ├── AuthorBadge.tsx
+│   │   │   └── hooks/
+│   │   │       ├── useRun.ts
+│   │   │       └── useSendMessage.ts
+│   │   ├── run/
+│   │   │   ├── RunStatusBar.tsx
+│   │   │   ├── CancelButton.tsx
+│   │   │   ├── RetryButton.tsx
+│   │   │   ├── ActivityTicker.tsx
+│   │   │   ├── ProgressBar.tsx
+│   │   │   └── ErrorBanner.tsx
+│   │   ├── reasoning/
+│   │   │   └── ReasoningPanel.tsx
+│   │   ├── tools/
+│   │   │   ├── ToolCallCard.tsx
+│   │   │   ├── ToolArgsPreview.tsx
+│   │   │   └── ToolResultSummary.tsx
+│   │   ├── subagents/
+│   │   │   ├── DelegationTree.tsx
+│   │   │   ├── SubagentCard.tsx
+│   │   │   └── TaskDetailDrawer.tsx
+│   │   ├── approvals/
+│   │   │   ├── ApprovalCard.tsx
+│   │   │   ├── ApprovalChain.tsx
+│   │   │   ├── ApprovalInbox.tsx
+│   │   │   └── ExpiryCountdown.tsx
+│   │   ├── artifacts/
+│   │   │   ├── ArtifactViewer.tsx
+│   │   │   ├── TableArtifact.tsx
+│   │   │   ├── ArtifactPinBar.tsx
+│   │   │   └── ProvenanceTooltip.tsx
+│   │   ├── charts/
+│   │   │   ├── ChartRenderer.tsx      # renders chart specs
+│   │   │   ├── LineChart.tsx
+│   │   │   ├── BarChart.tsx
+│   │   │   └── specAdapter.ts
+│   │   ├── documents/
+│   │   │   ├── UploadDropzone.tsx
+│   │   │   ├── UploadStatus.tsx
+│   │   │   ├── DocumentList.tsx
+│   │   │   ├── DocumentViewer.tsx
+│   │   │   ├── CitationLink.tsx       # anchor -> page highlight
+│   │   │   └── ScopeSelector.tsx
+│   │   ├── workspace/
+│   │   │   ├── WorkspaceSwitcher.tsx
+│   │   │   ├── MembersPanel.tsx
+│   │   │   ├── RoleBadge.tsx
+│   │   │   ├── InviteDialog.tsx
+│   │   │   ├── ShareDialog.tsx
+│   │   │   ├── PresenceAvatars.tsx
+│   │   │   ├── CollaborativeEditor.tsx  # Tiptap + Yjs
+│   │   │   ├── CommentThread.tsx
+│   │   │   ├── ForkSessionButton.tsx
+│   │   │   └── ConflictNotice.tsx
+│   │   ├── memory/
+│   │   │   ├── MemoryBrowser.tsx
+│   │   │   ├── MemoryRecordRow.tsx
+│   │   │   ├── ForgetDialog.tsx
+│   │   │   └── PromotionProposal.tsx
+│   │   ├── preferences/
+│   │   │   ├── PreferencesPage.tsx
+│   │   │   ├── sections/
+│   │   │   │   ├── Communication.tsx
+│   │   │   │   ├── Interaction.tsx
+│   │   │   │   ├── Defaults.tsx
+│   │   │   │   ├── Memory.tsx
+│   │   │   │   ├── Cost.tsx
+│   │   │   │   ├── Privacy.tsx
+│   │   │   │   └── Delegation.tsx
+│   │   │   ├── InferredProposal.tsx
+│   │   │   ├── PreferenceHistory.tsx
+│   │   │   └── BecauseOfSetting.tsx   # "because of your setting X"
+│   │   ├── plugins/
+│   │   │   ├── PluginCatalog.tsx
+│   │   │   ├── PluginDetail.tsx
+│   │   │   ├── PermissionConsent.tsx
+│   │   │   ├── OAuthConnect.tsx
+│   │   │   ├── CostWarning.tsx
+│   │   │   └── InstalledPlugins.tsx
+│   │   ├── usage/
+│   │   │   ├── UsageMeter.tsx
+│   │   │   ├── SpendLimitBanner.tsx
+│   │   │   ├── DowngradeOffer.tsx
+│   │   │   └── OverheadBreakdown.tsx
+│   │   └── admin/                     # tenant / workspace owner
+│   │       ├── AgentVersions.tsx
+│   │       ├── RunExplorer.tsx
+│   │       ├── PolicyOverlays.tsx
+│   │       ├── PluginAllowlist.tsx
+│   │       └── AuditLog.tsx
+│   │
+│   ├── widgets/                       # plugin UI host
+│   │   ├── WidgetHost.tsx             # sandboxed iframe
+│   │   ├── bridge.ts                  # postMessage contract
+│   │   ├── registry.ts                # name@version -> renderer
+│   │   ├── schemaValidate.ts
+│   │   └── GenericCustomCard.tsx      # unknown-event fallback
+│   │
+│   ├── components/                    # design-system primitives
+│   │   ├── Button.tsx
+│   │   ├── Card.tsx
+│   │   ├── Dialog.tsx
+│   │   ├── Drawer.tsx
+│   │   ├── Tabs.tsx
+│   │   ├── Table.tsx
+│   │   ├── Tooltip.tsx
+│   │   ├── Badge.tsx
+│   │   ├── Toast.tsx
+│   │   └── Skeleton.tsx
+│   │
+│   ├── pages/
+│   │   ├── SessionPage.tsx
+│   │   ├── WorkspacePage.tsx
+│   │   ├── DocumentsPage.tsx
+│   │   ├── ArtifactsPage.tsx
+│   │   ├── PreferencesPage.tsx
+│   │   ├── PluginsPage.tsx
+│   │   ├── UsagePage.tsx
+│   │   ├── AdminPage.tsx
+│   │   └── NotFound.tsx
+│   │
+│   ├── auth/
+│   │   ├── AuthProvider.tsx
+│   │   ├── oidc.ts
+│   │   └── RequireRole.tsx
+│   │
+│   ├── telemetry/
+│   │   ├── otelWeb.ts                 # traceparent on requests
+│   │   ├── uiEvents.ts                # sampled interaction events
+│   │   └── renderTiming.ts
+│   │
+│   ├── i18n/
+│   │   ├── index.ts
+│   │   └── locales/
+│   │       └── en-GB.json
+│   │
+│   ├── styles/
+│   │   ├── tokens.css
+│   │   ├── globals.css
+│   │   └── themes/
+│   │       ├── light.css
+│   │       └── dark.css
+│   │
+│   └── lib/
+│       ├── format.ts                  # numbers, currency, dates
+│       ├── ids.ts
+│       └── assert.ts
+│
+├── tests/
+│   ├── unit/
+│   │   ├── reducers/
+│   │   ├── sync/
+│   │   └── protocol/
+│   ├── component/
+│   ├── contract/                      # AG-UI event fixtures
+│   └── e2e/                           # Playwright
+│       ├── simple-query.spec.ts
+│       ├── approval-flow.spec.ts
+│       ├── reconnect.spec.ts
+│       └── collaboration.spec.ts
+│
+└── codegen/
+    ├── generate-types.ts              # from harness_schemas JSON Schema
+    └── output/│
+├── evals/
+│   ├── golden/
+│   ├── regression/
+│   ├── components/
+│   │   ├── context_compression/
+│   │   ├── memory_retrieval/
+│   │   └── routing/
+│   ├── privacy_leakage/
+│   ├── judges/
+│   └── runner.py
+│
+├── migrations/
+│   └── postgres/
+│
+├── deploy/
+│   ├── docker/
+│   ├── helm/
+│   │   ├── harness/
+│   │   └── values/
+│   ├── terraform/
+│   │   ├── cell/
+│   │   ├── kms/
+│   │   └── networking/
+│   └── otel-collector/
+│       └── config.yaml
+│
+├── tests/
+│   ├── integration/
+│   ├── e2e/
+│   └── contract/                      # MCP, A2A, AG-UI conformance
+│
+└── docs/
+    ├── architecture/
+    └── adr/
